@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "trading-system"
+version = "0.1.0"
+description = ""
+authors = ["Vignesh Pai B H"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+yfinance = "^0.2.51"
+beautifulsoup4 = "^4.12.3"
+requests = "^2.32.3"
+openpyxl = "^3.1.5"
+sqlalchemy = "^2.0.37"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
