@@ -1,44 +1,35 @@
 algo_trading/
 │
 ├── data/
-│   ├── tickers.csv                # File with all ticker names of interest
-│   └── historical_data/           # Folder for storing raw data (optional if using a database)
+│   ├── tickers.csv                # File containing the list of tickers
 │
 ├── src/
 │   ├── database/
 │   │   ├── __init__.py            # Package initialization
-│   │   ├── config.py              # Database configuration
-│   │   ├── engine.py              # Engine creation and connection utilities
-│   │   └── utils.py               # Common database helper functions
+│   │   ├── config.py              # DatabaseConfig class
+│   │   ├── engine.py              # Database engine creation utilities
+│   │   └── utils.py               # Database helper functions
 │   │
 │   ├── collectors/
 │   │   ├── __init__.py            # Package initialization
-│   │   ├── financial_data.py      # Financial data collection functions
-│   │   └── price_data.py          # Price data collection functions
+│   │   ├── financial_data.py      # Financial data collection logic
+│   │   ├── price_data.py          # Price data collection logic
+│   │   └── company_info.py        # Company info data collection logic
 │   │
-│   ├── strategies/
+│   ├── config/
 │   │   ├── __init__.py            # Package initialization
-│   │   ├── base.py                # Base class for all strategies
-│   │   ├── strategy_family_1.py   # Strategies under a specific family
-│   │   └── strategy_family_2.py   # Another strategy family
+│   │   ├── logging_config.py      # Logging configuration
+│   │   └── settings.py            # Global configurations
 │   │
-│   ├── portfolio/
-│   │   ├── __init__.py            # Package initialization
-│   │   ├── optimizer.py           # Money allocation optimizer
-│   │   ├── review.py              # Portfolio review and adjustment logic
-│   │   └── utils.py               # Helper functions for portfolio management
-│   │
-│   ├── config.py                  # Global configurations
-│   ├── logging_config.py          # Centralized logging configuration
-│   └── main.py                    # Entry point of the application
+│   ├── main.py                    # Entry point for the application
 │
 ├── tests/
-│   ├── test_collectors.py         # Unit tests for data collection modules
-│   ├── test_strategies.py         # Unit tests for strategy modules
-│   ├── test_portfolio.py          # Unit tests for portfolio modules
-│   └── conftest.py                # Test fixtures for the test suite
+│   ├── test_financial_data.py     # Unit tests for financial data collection
+│   ├── test_price_data.py         # Unit tests for price data collection
+│   ├── test_company_info.py       # Unit tests for company info collection
+│   └── conftest.py                # Shared test fixtures
 │
 ├── requirements.txt               # Python dependencies
-├── pyproject.toml                 # Poetry configuration (includes dependencies and build info)
+├── pyproject.toml                 # Poetry configuration
 ├── README.md                      # Project overview and usage instructions
-└── .env                           # Environment variables (e.g., database credentials)
+└── .env                           # Environment variables
