@@ -3,64 +3,69 @@
 import logging
 import yfinance as yf
 import pandas as pd
-from sqlalchemy import create_engine, exc
 from datetime import datetime, timedelta
-from config.settings import DatabaseConfig
+from src.collectors.base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
 
-class PriceCollector:
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
-        try:
-            self.engine = create_engine(
-                config.url,
-                pool_size=config.pool_size,
-                max_overflow=config.max_overflow
-            )
-            logger.info("Database connection established successfully for PriceCollector")
-        except exc.SQLAlchemyError as e:
-            logger.error(f"Failed to establish database connection in PriceCollector: {str(e)}")
-            raise
+class PriceCollector(BaseCollector):
+    """Collect price data using yfinance and store it in the database."""
 
-    def _save_to_database(self, df: pd.DataFrame, table_name: str):
+    def fetch_price_data(self, ticker: str):
+        """
+        Fetch daily prices for a ticker and save to the database.
+        :param ticker: Ticker symbol.
+        """
         try:
-            df.to_sql(
-                name=table_name,
-                con=self.engine,
-                if_exists='replace',
-                index=False,
-                method='multi',
-                chunksize=1000
-            )
-            logger.info(f"Successfully saved data to {table_name}")
-        except exc.SQLAlchemyError as e:
-            logger.error(f"Failed to save data to {table_name}: {str(e)}")
-            raise
+            table_name = "daily_prices"
+            latest_date = self._get_latest_date(table_name, ticker)
 
-    def refresh_price_data(self, ticker: str):
-        try:
             stock = yf.Ticker(ticker)
-            hist = stock.history(period="max")
+            if latest_date:
+                start_date = latest_date + timedelta(days=1)
+            else:
+                start_date = datetime.now() - timedelta(days=365)
 
-            if hist.empty:
-                logger.warning(f"No price data available for {ticker}")
+            data = stock.history(start=start_date.strftime('%Y-%m-%d'))
+
+            if data.empty:
+                logger.warning(f"No price data available for {ticker}.")
                 return
 
-            hist.reset_index(inplace=True)
-            hist['ticker'] = ticker
-            hist['updated_at'] = datetime.now()
-            hist.rename(columns={
-                'Date': 'date',
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close',
-                'Volume': 'volume'
-            }, inplace=True)
+            data = data.reset_index()
+            data['ticker'] = ticker
+            data['updated_at'] = datetime.now()
+            data['data_source'] = 'yfinance'
 
-            self._save_to_database(hist, "daily_prices")
+            self._save_to_database(data, table_name)
+        except Exception as e:
+            logger.error(f"Error fetching daily prices for {ticker}: {e}")
+            raise
+
+    def refresh_data(self, ticker):
+        """
+        Refresh data for a specific ticker by deleting and replacing it.
+        :param ticker: Ticker symbol.
+        :param table_name: Name of the table.
+        """
+        try:
+            # Fetch data from API
+            stock = yf.Ticker(ticker)
+            data = stock.history(period='max')
+
+            if data is None or data.empty:
+                logger.warning(f"No data available for {ticker} in daily_prices.")
+                return
+
+            data = data.reset_index()
+            data['ticker'] = ticker
+            data['updated_at'] = datetime.now()
+            data['data_source'] = 'yfinance'
+
+            # Replace data in the database
+            self._delete_existing_data("daily_prices", ticker)
+            self._save_to_database(data, "daily_prices")
 
         except Exception as e:
-            logger.error(f"Error refreshing price data for {ticker}: {str(e)}")
+            logger.error(f"Error processing refresh price data for {ticker}: {e}")
             raise

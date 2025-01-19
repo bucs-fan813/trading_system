@@ -3,72 +3,58 @@
 import logging
 import yfinance as yf
 import pandas as pd
-from sqlalchemy import create_engine, exc
-from datetime import datetime
-from config.settings import DatabaseConfig
+from tenacity import retry, stop_after_attempt, wait_exponential
+from datetime import datetime, timedelta
+from src.collectors.base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
 
-class StatementsCollector:
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
-        try:
-            self.engine = create_engine(
-                config.url,
-                pool_size=config.pool_size,
-                max_overflow=config.max_overflow
-            )
-            logger.info("Database connection established successfully for StatementsCollector")
-        except exc.SQLAlchemyError as e:
-            logger.error(f"Failed to establish database connection in StatementsCollector: {str(e)}")
-            raise
+class StatementsCollector(BaseCollector):
+    """Collect financial statements using yfinance and store them in the database."""
 
-    def _save_to_database(self, df: pd.DataFrame, table_name: str):
-        try:
-            df.to_sql(
-                name=table_name,
-                con=self.engine,
-                if_exists='replace',
-                index=False,
-                method='multi',
-                chunksize=1000
-            )
-            logger.info(f"Successfully saved data to {table_name}")
-        except exc.SQLAlchemyError as e:
-            logger.error(f"Failed to save data to {table_name}: {str(e)}")
-            raise
+    def __init__(self):
+        super().__init__()
+        self.financial_statements = [
+            ('balance_sheet', lambda stock: stock.get_balance_sheet),
+            ('income_statement', lambda stock: stock.get_financials),
+            ('cash_flow', lambda stock: stock.get_cashflow)
+        ]
 
-    def refresh_statements(self, ticker: str):
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def fetch_financial_statement(self, ticker, statement_type, fetch_function):
+        """
+        Fetch and process financial statements.
+        :param ticker: Ticker symbol.
+        :param statement_type: Type of statement (e.g., 'balance_sheet').
+        :param fetch_function: Function to fetch the statement from yfinance.
+        """
         try:
+            table_name = statement_type.lower()
+            latest_date = self._get_latest_date(table_name, ticker)
+
+            if latest_date and (datetime.now() - latest_date < timedelta(days=40)):
+                logger.info(f"Skipping {ticker} {statement_type} - data is up to date.")
+                return
+
             stock = yf.Ticker(ticker)
+            data = fetch_function(stock)
 
-            # Balance Sheet
-            balance_sheet = stock.get_balancesheet(as_dict=False)
-            if not balance_sheet.empty:
-                balance_sheet = balance_sheet.T.reset_index()
-                balance_sheet['ticker'] = ticker
-                balance_sheet['statement_type'] = 'balance_sheet'
-                balance_sheet['updated_at'] = datetime.now()
-                self._save_to_database(balance_sheet, "financial_statements")
+            if data is None or data.empty:
+                logger.warning(f"No {statement_type} data available for {ticker}.")
+                return
 
-            # Income Statement
-            income_statement = stock.get_incomestatement(as_dict=False)
-            if not income_statement.empty:
-                income_statement = income_statement.T.reset_index()
-                income_statement['ticker'] = ticker
-                income_statement['statement_type'] = 'income_statement'
-                income_statement['updated_at'] = datetime.now()
-                self._save_to_database(income_statement, "financial_statements")
+            data = data.fillna(pd.NA).T
+            data['ticker'] = ticker
+            data = data.reset_index().rename(columns={'index': 'date'})
 
-            # Cash Flow Statement
-            cash_flow = stock.get_cashflow(as_dict=False)
-            if not cash_flow.empty:
-                cash_flow = cash_flow.T.reset_index()
-                cash_flow['ticker'] = ticker
-                cash_flow['statement_type'] = 'cash_flow'
-                cash_flow['updated_at'] = datetime.now()
-                self._save_to_database(cash_flow, "financial_statements")
+            if latest_date:
+                data = data[data['date'] > latest_date]
+
+            if not data.empty:
+                data['updated_at'] = datetime.now()
+                data['data_source'] = 'yfinance'
+                self._save_to_database(data, table_name)
 
         except Exception as e:
-            logger.error(f"Error refreshing financial statements for {ticker}: {str(e)}")
+            logger.error(f"Error processing {statement_type} for {ticker}: {e}")
             raise

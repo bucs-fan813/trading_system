@@ -7,18 +7,14 @@ from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import List, Dict
+from src.collectors.base_collector import BaseCollector
 # from concurrent.futures import ThreadPoolExecutor
 # TODO use threading to speed up the process
 
 logger = logging.getLogger(__name__)
 
 class InfoCollector:
-    def __init__(self, db_engine):
-            """
-            Initialize with a database engine.
-            :param db_engine: SQLAlchemy engine object.
-            """
-            self.engine = db_engine
+    """Collect company information using yfinance and store it in the database."""
 
     def _flatten_nested_dict(self, nested_dict: Dict) -> Dict:
         """Flatten a nested dictionary structure."""
@@ -32,26 +28,6 @@ class InfoCollector:
                     flat_dict[new_key] = v
         flatten(nested_dict)
         return flat_dict
-
-    def _save_to_database(self, df, table_name):
-        """
-        Save a DataFrame to the database.
-        :param df: Pandas DataFrame to save.
-        :param table_name: Table name in the database.
-        """
-        try:
-            df.to_sql(
-                name=table_name,
-                con=self.engine,
-                if_exists='append',
-                index=False,
-                method='multi',
-                chunksize=1000
-            )
-            logger.info(f"Data saved to {table_name} successfully.")
-        except SQLAlchemyError as e:
-            logger.error(f"Error saving data to {table_name}: {e}")
-            raise
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def fetch_company_info(self, ticker: str) -> None:
@@ -79,4 +55,32 @@ class InfoCollector:
 
         except Exception as e:
             logger.error(f"Error processing company info for {ticker}: {str(e)}")
+            raise
+
+    def refresh_data(self, ticker):
+        """
+        Refresh data for a specific ticker by deleting and replacing it.
+        :param ticker: Ticker symbol.
+        :param table_name: Name of the table.
+        """
+        try:
+            # Fetch data from API
+            stock = yf.Ticker(ticker)
+            data = stock.info()
+
+            if data is None or data.empty:
+                logger.warning(f"No data available for {ticker} in info table.")
+                return
+
+            data = pd.DataFrame([data])
+            data['ticker'] = ticker
+            data['updated_at'] = datetime.now()
+            data['data_source'] = 'yfinance'
+            
+            # Replace data in the database
+            self._delete_existing_data('company_info', ticker)
+            self._save_to_database(data, 'company_info')
+
+        except Exception as e:
+            logger.error(f"Error refreshing data for {ticker} in company_info: {e}")
             raise
