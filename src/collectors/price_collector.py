@@ -26,24 +26,28 @@ class PriceCollector(BaseCollector):
             stock = yf.Ticker(ticker)
 
             if latest_date:
+                logger.info(f"Using available latest date to fetch daily prices for {ticker}.")
                 start_date = latest_date + timedelta(days=1)
+
+                data = stock.history(start=start_date.strftime('%Y-%m-%d'))
+
+                if data.empty:
+                    logger.warning(f"No new price data available for {ticker}.")
+                    return
+
+                data = data.reset_index()
+                data['ticker'] = ticker
+                data['updated_at'] = datetime.now()
+                data['data_source'] = 'yfinance'
+
+                required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
+                self._save_to_database(data, table_name, required_columns)
+
             else:
-                start_date = datetime.now() - timedelta(days=365)	 
-																 
+                logger.info(f"No latest date to fetch daily prices for {ticker}. Using refresh_data instead")
+                self.refresh_data(ticker)
 
-            data = stock.history(start=start_date.strftime('%Y-%m-%d'))
-
-            if data.empty:
-                logger.warning(f"No new price data available for {ticker}.")
-                return
-
-            data = data.reset_index()
-            data['ticker'] = ticker
-            data['updated_at'] = datetime.now()
-            data['data_source'] = 'yfinance'
-
-            required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
-            self._save_to_database(data, table_name, required_columns)
+            logger.info(f"Successfully fetched daily prices for {ticker}.")
 
         except Exception as e:
             logger.error(f"Error fetching daily prices for {ticker}: {e}")
