@@ -8,12 +8,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import List, Dict
 from src.collectors.base_collector import BaseCollector
-# from concurrent.futures import ThreadPoolExecutor
-# TODO use threading to speed up the process
 
 logger = logging.getLogger(__name__)
 
-class InfoCollector:
+class InfoCollector(BaseCollector):
     """Collect company information using yfinance and store it in the database."""
 
     def _flatten_nested_dict(self, nested_dict: Dict) -> Dict:
