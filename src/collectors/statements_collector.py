@@ -21,9 +21,9 @@ class StatementsCollector(BaseCollector):
         """
         super().__init__(db_engine, config)
         self.financial_statements = [
-            ('balance_sheet', lambda stock: stock.get_balance_sheet),
-            ('income_statement', lambda stock: stock.get_financials),
-            ('cash_flow', lambda stock: stock.get_cashflow)
+            ('balance_sheet', lambda stock: stock.balance_sheet),
+            ('income_statement', lambda stock: stock.income_stmt),
+            ('cash_flow', lambda stock: stock.casf_flow)
         ]
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
