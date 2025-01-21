@@ -1,4 +1,4 @@
-# trading_system/collectors/statements_collector.py
+# trading_system/src/collectors/statements_collector.py
 import logging
 import yfinance as yf
 import pandas as pd

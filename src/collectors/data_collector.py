@@ -1,11 +1,11 @@
-# trading_system/collectors/data_collector.py
+# trading_system/src/collectors/data_collector.py
 
 import logging
-from database.config import DatabaseConfig
-from database.engine import create_db_engine
-from collectors.price_collector import PriceCollector
-from collectors.info_collector import InfoCollector
-from collectors.statements_collector import StatementsCollector
+from src.database.config import DatabaseConfig
+from src.database.engine import create_db_engine
+from src.collectors.price_collector import PriceCollector
+from src.collectors.info_collector import InfoCollector
+from src.collectors.statements_collector import StatementsCollector
 from datetime import datetime
 import random
 from concurrent.futures import ThreadPoolExecutor

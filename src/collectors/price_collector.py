@@ -1,4 +1,4 @@
-# trading_system/collectors/price_collector.py											  
+# trading_system/src/collectors/price_collector.py											  
 
 import logging
 import yfinance as yf

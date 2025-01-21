@@ -1,4 +1,4 @@
-# trading_system/collectors/base_collector.py
+# trading_system/src/collectors/base_collector.py
 
 from typing import Callable, Optional, Dict, Any
 from datetime import datetime
