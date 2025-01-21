@@ -57,8 +57,10 @@ def refresh_data_for_ticker(ticker, collectors):
 def main(batch_size: int = 10):
     """Main function to orchestrate the data collection process."""
 
-    # Create database engine
-    dbengine = create_db_engine(DatabaseConfig())
+    # Use the default configuration for SQLite
+    db_config = DatabaseConfig.default()
+    db_engine = create_db_engine(db_config)
+
 
     # Ticker list
     with open("tickers.txt", "r") as f:
@@ -71,8 +73,8 @@ def main(batch_size: int = 10):
     logger.info(f"Refreshing data for tickers: {tickers_to_refresh}")
 
     # Initialize collectors
-    price_collector = PriceCollector(dbengine)
-    info_collector = InfoCollector(dbengine)
+    price_collector = PriceCollector(db_engine)
+    info_collector = InfoCollector(db_engine)
     collectors = {
         'price': price_collector,
         'info': info_collector
@@ -91,7 +93,7 @@ def main(batch_size: int = 10):
             future.result()
 
     # Financial Statements processing handled separately using ThreadPoolExecutor
-    statements_collector = StatementsCollector(dbengine)
+    statements_collector = StatementsCollector(db_engine)
 
     with ThreadPoolExecutor(max_workers=batch_size) as executor:
         # Process financial statements for each ticker
