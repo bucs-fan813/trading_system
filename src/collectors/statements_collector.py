@@ -11,15 +11,12 @@ logger = logging.getLogger(__name__)
 class StatementsCollector(BaseCollector):
     """Collect financial statements using yfinance and store them in the database."""
 
-    def __init__(self, db_engine, config):
+    def __init__(self, db_engine):
         """
-        Initialize the StatementsCollector with a database engine and config.
-        
-        Args:
-            db_engine: SQLAlchemy engine object
-            config: Dictionary containing configuration parameters
+        Initialize the StatementsCollector with a database engine.
+            
         """
-        super().__init__(db_engine, config)
+        super().__init__(db_engine)
         self.financial_statements = [
             ('balance_sheet', lambda stock: stock.balance_sheet),
             ('income_statement', lambda stock: stock.income_stmt),
@@ -67,3 +64,6 @@ class StatementsCollector(BaseCollector):
         except Exception as e:
             logger.error(f"Error processing {statement_type} for {ticker}: {e}")
             raise
+
+    def refresh_data(self, ticker: str) -> None:
+        pass

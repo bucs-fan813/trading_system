@@ -4,6 +4,7 @@ from typing import Callable, Optional, Dict, Any
 from datetime import datetime
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
 from contextlib import contextmanager
@@ -13,16 +14,14 @@ logger = logging.getLogger(__name__)
 class BaseCollector(ABC):
     """Base class for collecting financial data."""
 
-    def __init__(self, db_engine, config: Dict[str, Any]):
+    def __init__(self, db_engine):
         """
         Initialize collector with database engine and configuration.
         
         Args:
             db_engine: SQLAlchemy engine object
-            config: Dictionary containing configuration parameters
         """
         self.engine = db_engine
-        self.config = config
         
     @contextmanager
     def _db_connection(self):
@@ -56,7 +55,7 @@ class BaseCollector(ABC):
 
     def _delete_existing_data(self, table_name: str, ticker: str) -> None:
         """Delete existing data for a specific ticker."""
-        query = f"DELETE FROM {table_name} WHERE ticker = :ticker"
+        query = text(f"DELETE FROM {table_name} WHERE ticker = :ticker")
         
         try:
             with self._db_connection() as conn:
@@ -69,7 +68,7 @@ class BaseCollector(ABC):
 
     def _get_latest_date(self, table_name: str, ticker: str) -> Optional[datetime]:
         """Get the latest date for a ticker."""
-        query = f"SELECT MAX(date) FROM {table_name} WHERE ticker = :ticker"
+        query = text(f"SELECT MAX(date) FROM {table_name} WHERE ticker = :ticker")
         
         try:
             with self._db_connection() as conn:
@@ -103,7 +102,7 @@ class BaseCollector(ABC):
                     if_exists='append',
                     index=False,
                     method='multi',
-                    chunksize=self.config.get('chunk_size', 1000)
+                    chunksize=1000
                 )
                 conn.commit()
                 
