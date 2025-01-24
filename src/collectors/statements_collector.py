@@ -65,12 +65,6 @@ class StatementsCollector(BaseCollector):
                 data['updated_at'] = datetime.now()
                 data['data_source'] = 'yfinance'
 
-                # Ensure required columns exist
-                required_columns = ['date', 'ticker', 'updated_at', 'data_source']
-                for col in required_columns:
-                    if col not in data.columns:
-                        data[col] = pd.NA
-
                 # Dynamically update database schema if needed
                 self._ensure_table_schema(table_name, data)
 

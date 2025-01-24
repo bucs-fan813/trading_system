@@ -26,26 +26,30 @@ class PriceCollector(BaseCollector):
             stock = yf.Ticker(ticker)
 
             if latest_date:
-                logger.info(f"Using available latest date to fetch daily prices for {ticker}.")
+                logger.info(f"Fetching daily prices for {ticker} starting from {latest_date + timedelta(days=1)}.")
                 start_date = latest_date + timedelta(days=1)
 
                 data = stock.history(start=start_date.strftime('%Y-%m-%d'))
-
-                if data.empty:
-                    logger.warning(f"No new price data available for {ticker}.")
-                    return
-
-                data = data.reset_index()
-                data['ticker'] = ticker
-                data['updated_at'] = datetime.now()
-                data['data_source'] = 'yfinance'
-
-                required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
-                self._save_to_database(data, table_name, required_columns)
-
             else:
-                logger.info(f"No latest date to fetch daily prices for {ticker}. Using refresh_data instead")
-                self.refresh_data(ticker)
+                logger.info(f"No latest date found for {ticker}. Fetching data from the beginning.")
+                data = stock.history(period="max")
+
+            if data.empty:
+                logger.warning(f"No new price data available for {ticker}.")
+                return
+
+            # Process the data
+            data = data.reset_index()
+            data['ticker'] = ticker
+            data['updated_at'] = datetime.now()
+            data['data_source'] = 'yfinance'
+
+            required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
+            
+            # Ensure table schema matches data
+            self._ensure_table_schema(table_name, data)
+            
+            self._save_to_database(data, table_name, required_columns)
 
             logger.info(f"Successfully fetched daily prices for {ticker}.")
 
@@ -65,9 +69,10 @@ class PriceCollector(BaseCollector):
             # Fetch data from API
             stock = yf.Ticker(ticker)
             data = stock.history(period='max')
+            table_name = "daily_prices"
 
             if data.empty:
-                logger.warning(f"No data available for {ticker} in daily_prices.")
+                logger.warning(f"No data available for {ticker} in {table_name}.")
                 return
 
             data = data.reset_index()
@@ -78,10 +83,14 @@ class PriceCollector(BaseCollector):
             required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
 
             # Replace data in the database
-            self._delete_existing_data("daily_prices", ticker)
-            self._save_to_database(data, "daily_prices", required_columns)
+            self._delete_existing_data(table_name, ticker)
 
-            logger.info(f"Successfully refreshed data for {ticker} in daily_prices.")
+            # Ensure table schema matches data
+            self._ensure_table_schema(table_name, data)
+
+            self._save_to_database(data, table_name, required_columns)
+
+            logger.info(f"Successfully refreshed data for {ticker} in {table_name}.")
 
         except Exception as e:
             logger.error(f"Error refreshing data for {ticker}: {e}")

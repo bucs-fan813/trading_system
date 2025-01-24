@@ -1,20 +1,31 @@
 # trading_system/src/collectors/info_collector.py
+
 import logging
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Dict, List
+from typing import Dict
 from src.collectors.base_collector import BaseCollector
 
 logger = logging.getLogger(__name__)
+
 
 class InfoCollector(BaseCollector):
     """Collect company information using yfinance and store it in the database."""
 
     def _flatten_nested_dict(self, nested_dict: Dict) -> Dict:
-        """Flatten a nested dictionary structure."""
+        """
+        Flatten a nested dictionary structure.
+        
+        Args:
+            nested_dict: A dictionary with potential nested structures.
+
+        Returns:
+            A flat dictionary with nested keys concatenated.
+        """
         flat_dict = {}
+
         def flatten(d, parent_key=''):
             for k, v in d.items():
                 new_key = f"{parent_key}_{k}" if parent_key else k
@@ -22,27 +33,52 @@ class InfoCollector(BaseCollector):
                     flatten(v, new_key)
                 else:
                     flat_dict[new_key] = v
+
         flatten(nested_dict)
         return flat_dict
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def fetch_company_info(self, ticker: str) -> pd.DataFrame:
+    def _get_last_update_date(self, table_name: str, ticker: str) -> datetime:
         """
-        Fetch company information for a specific ticker.
+        Get the last updated date for a specific ticker in the database.
+        
+        Args:
+            table_name: The name of the database table.
+            ticker: The ticker symbol.
+        
+        Returns:
+            The last updated date as a datetime object or None if no data exists.
+        """
+        query = f"""
+        SELECT MAX(updated_at) AS last_update
+        FROM {table_name}
+        WHERE ticker = :ticker
+        """
+        result = self.db_engine.execute(query, {"ticker": ticker}).fetchone()
+        return result["last_update"] if result and result["last_update"] else None
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def fetch_company_info(self, ticker: str, table_name: str = "company_info") -> None:
+        """
+        Fetch company information and save it to the database if outdated or missing.
         
         Args:
             ticker: Ticker symbol.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing company info.
+            table_name: The name of the database table (default: 'company_info').
         """
         try:
+            # Check the last update date
+            last_update = self._get_last_update_date(table_name, ticker)
+            if last_update and (datetime.now() - last_update < timedelta(days=30)):
+                logger.info(f"Skipping {ticker}: Data is less than 30 days old.")
+                return
+
+            # Fetch company information using yfinance
             stock = yf.Ticker(ticker)
             info = stock.info
 
             if not info:
-                logger.warning(f"No company info available for {ticker}")
-                return pd.DataFrame()
+                logger.warning(f"No company info available for {ticker}.")
+                return
 
             # Flatten and convert to DataFrame
             flat_info = self._flatten_nested_dict(info)
@@ -50,38 +86,30 @@ class InfoCollector(BaseCollector):
             info_df['ticker'] = ticker
             info_df['updated_at'] = datetime.now()
             info_df['data_source'] = 'yfinance'
-            return info_df
+
+            # Ensure schema matches the DataFrame
+            self._ensure_table_schema(table_name, info_df)
+
+            # Save data to the database
+            self._save_to_database(info_df, table_name)
+            logger.info(f"Successfully fetched and saved data for {ticker} in {table_name}.")
 
         except Exception as e:
-            logger.error(f"Error fetching company info for {ticker}: {str(e)}")
+            logger.error(f"Error fetching company info for {ticker}: {e}")
             raise
 
-    def refresh_data(self, ticker: str, table_name: str = 'company_info', fetch_function=None):
+    def refresh_data(self, ticker: str, table_name: str = "company_info") -> None:
         """
-        Refresh data for a specific ticker by deleting and replacing it.
+        Refresh company information for a specific ticker by calling `fetch_company_info`.
         
         Args:
             ticker: Ticker symbol.
-            table_name: Target table name (default: 'company_info').
-            fetch_function: Function to fetch data (optional, default: `self.fetch_company_info`).
+            table_name: The name of the database table (default: 'company_info').
         """
         try:
-            # Use the provided fetch_function or default to fetch_company_info
-            fetch_function = fetch_function or self.fetch_company_info
-
-            # Fetch data
-            data = fetch_function(ticker)
-
-            if data.empty:
-                logger.warning(f"No data available for {ticker} in {table_name}.")
-                return
-
-            # Replace data in the database
-            self._delete_existing_data(table_name, ticker)
-            self._save_to_database(data, table_name, required_columns=['ticker', 'updated_at', 'data_source'])
-
-            logger.info(f"Successfully refreshed data for {ticker} in {table_name}")
-
+            # Simply fetch company info, as fetch_company_info handles refreshing logic
+            self.fetch_company_info(ticker, table_name)
+            logger.info(f"Successfully refreshed data for {ticker} in {table_name}.")
         except Exception as e:
             logger.error(f"Error refreshing data for {ticker} in {table_name}: {e}")
             raise
