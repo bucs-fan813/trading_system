@@ -8,6 +8,7 @@ from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
 from contextlib import contextmanager
+from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,41 @@ class BaseCollector(ABC):
         except Exception as e:
             logger.error(f"Error saving data to {table_name}: {e}")
             raise
+
+    def _ensure_table_schema(self, table_name: str, data: pd.DataFrame) -> None:
+        """
+        Ensure the database table schema matches the DataFrame columns.
+
+        Args:
+            table_name: Name of the database table.
+            data: DataFrame to check columns against the table.
+        """
+        with self.db_engine.connect() as conn:
+            inspector = inspect(conn)
+            if not inspector.has_table(table_name):
+                # If the table doesn't exist, create it based on the DataFrame schema
+                data.head(0).to_sql(table_name, conn, index=False, if_exists='replace')
+                return
+
+            # Fetch existing columns
+            existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
+            new_columns = [col for col in data.columns if col not in existing_columns]
+
+            # Add missing columns
+            for column in new_columns:
+                col_type = 'TEXT'  # Default type for new columns
+                if pd.api.types.is_integer_dtype(data[column]):
+                    col_type = 'INTEGER'
+                elif pd.api.types.is_float_dtype(data[column]):
+                    col_type = 'FLOAT'
+                elif pd.api.types.is_datetime64_any_dtype(data[column]):
+                    col_type = 'DATETIME'
+
+                # Add the column to the table
+                alter_query = text(f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}")
+                conn.execute(alter_query)
+
+            conn.commit()
 
     @abstractmethod
     def refresh_data(self, ticker: str, **kwargs) -> None:

@@ -23,23 +23,6 @@ class StatementsCollector(BaseCollector):
             ('cash_flow', lambda stock: stock.casf_flow)
         ]
 
-    def _ensure_table_schema(self, table_name: str, data: pd.DataFrame) -> None:
-        """
-        Ensure the database table schema matches the DataFrame columns.
-        
-        Args:
-            table_name: Name of the database table.
-            data: DataFrame to check columns against the table.
-        """
-        with self._db_connection() as conn:
-            existing_columns = pd.read_sql(
-                f"PRAGMA table_info({table_name});", conn
-            )['name'].tolist()
-            for column in data.columns:
-                if column not in existing_columns:
-                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column} TEXT;")
-
-
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def fetch_financial_statement(self, ticker: str, statement_type: str, fetch_function: callable) -> None:
         """
