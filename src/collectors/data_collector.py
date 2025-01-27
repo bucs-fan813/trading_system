@@ -61,7 +61,6 @@ def main(batch_size: int = 10):
     db_config = DatabaseConfig.default()
     db_engine = create_db_engine(db_config)
 
-
     # Ticker list
     with open("tickers.txt", "r") as f:
         all_tickers = [line.strip() for line in f if line.strip()]
@@ -75,52 +74,84 @@ def main(batch_size: int = 10):
     # Initialize collectors
     price_collector = PriceCollector(db_engine)
     info_collector = InfoCollector(db_engine)
+    statements_collector = StatementsCollector(db_engine)
     collectors = {
         'price': price_collector,
         'info': info_collector
     }
 
     # ThreadPoolExecutor to handle concurrent refresh tasks
-    with ThreadPoolExecutor(max_workers=batch_size) as executor:
-        # Refresh data concurrently for selected tickers
-        futures = []
-        for ticker in tickers_to_refresh:
-            future = executor.submit(refresh_data_for_ticker, ticker, collectors)
-            futures.append(future)
-        
-        # Wait for all futures to complete
-        for future in futures:
-            future.result()
-
-    # Financial Statements processing handled separately using ThreadPoolExecutor
-    statements_collector = StatementsCollector(db_engine)
-
-    with ThreadPoolExecutor(max_workers=batch_size) as executor:
-        # Process financial statements for each ticker
-        futures = []
-        for statement_type, fetch_func in statements_collector.financial_statements:
-            for ticker in all_tickers:
-                future = executor.submit(
-                    statements_collector.fetch_financial_statement,
-                    ticker,
-                    statement_type,
-                    fetch_func
-                )
+    try:
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # Refresh data concurrently for selected tickers
+            futures = []
+            for ticker in tickers_to_refresh:
+                future = executor.submit(refresh_data_for_ticker, ticker, collectors)
                 futures.append(future)
-        
-        # Wait for financial statement processing to complete
-        for future in futures:
-            future.result()
 
-        # Process daily prices
-        futures = []
-        for ticker in all_tickers:
-            future = executor.submit(price_collector.fetch_price_data, ticker)
-            futures.append(future)
-        
-        # Wait for price futures to complete
-        for future in futures:
-            future.result()
+            # Wait for all futures to complete
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Error processing ticker: {e}")
+
+        # Process financial statements for each ticker
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = []
+            for statement_type, fetch_func in statements_collector.financial_statements:
+                for ticker in all_tickers:
+                    future = executor.submit(
+                        statements_collector.fetch_financial_statement,
+                        ticker,
+                        statement_type,
+                        fetch_func
+                    )
+                    futures.append(future)
+
+            # Wait for financial statement processing to complete
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Error processing financial statement: {e}")
+
+        # Process daily prices for all tickers
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = []
+            for ticker in all_tickers:
+                future = executor.submit(price_collector.fetch_price_data, ticker)
+                futures.append(future)
+
+            # Wait for all price futures to complete
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Error processing price data: {e}")
+
+        logger.info(" Price data collection process completed successfully.")
+
+        # Process company info for all tickers
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = []
+            for ticker in all_tickers:
+                future = executor.submit(info_collector.fetch_company_info, ticker)
+                futures.append(future)
+
+            # Wait for all company info fetch to complete
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Error processing company info: {e}")
+
+        logger.info("Company info collection process completed successfully.")
+
+
+    except Exception as e:
+        logger.error(f"Unexpected error in the main process: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
