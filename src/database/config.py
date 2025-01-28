@@ -1,15 +1,15 @@
 # trading_system/src/database/config.py
 
-from dataclasses import dataclass
 from pathlib import Path
+from dataclasses import dataclass, field
 
 @dataclass
 class DatabaseConfig:
     """Database configuration settings."""
     url: str
-    max_retries: int = 3
-    pool_size: int = 5
-    max_overflow: int = 10
+    max_retries: int = field(default=3, metadata={"validate": lambda x: x > 0})
+    pool_size: int = field(default=5, metadata={"validate": lambda x: x >= 1})
+    max_overflow: int = field(default=10, metadata={"validate": lambda x: x >= 0})
 
     @staticmethod
     def default():

@@ -5,6 +5,7 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 from datetime import datetime, timedelta
 from src.collectors.base_collector import BaseCollector
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +21,11 @@ class StatementsCollector(BaseCollector):
         self.financial_statements = [
             ('balance_sheet', lambda stock: stock.balance_sheet),
             ('income_statement', lambda stock: stock.income_stmt),
-            ('cash_flow', lambda stock: stock.casf_flow)
+            ('cash_flow', lambda stock: stock.cash_flow)
         ]
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def fetch_financial_statement(self, ticker: str, statement_type: str, fetch_function: callable) -> None:
+    def fetch_financial_statement(self, ticker: str, statement_type: str, fetch_function: Callable) -> None:
         """
         Fetch and process financial statements.
 
@@ -47,6 +48,12 @@ class StatementsCollector(BaseCollector):
             data = fetch_function(stock)
 
             # Handle cases where no data is returned
+            if data is None:
+                logger.warning(f"No data returned for {ticker} {statement_type}")
+                return
+            if not isinstance(data, pd.DataFrame):
+                logger.warning(f"Unexpected data type {type(data)} for {statement_type}")
+                return
             if data is None or data.empty:
                 logger.warning(f"No {statement_type} data available for {ticker}.")
                 return
@@ -69,6 +76,8 @@ class StatementsCollector(BaseCollector):
                 self._ensure_table_schema(table_name, data)
 
                 # Save to database
+                required_columns = ['date', 'ticker', 'updated_at']
+                self._save_to_database(data, table_name, required_columns)
                 self._save_to_database(data, table_name)
 
         except Exception as e:

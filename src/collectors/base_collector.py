@@ -121,7 +121,7 @@ class BaseCollector(ABC):
             table_name: Name of the database table.
             data: DataFrame to check columns against the table.
         """
-        with self.db_engine.connect() as conn:
+        with self.engine.connect() as conn:
             inspector = inspect(conn)
             if not inspector.has_table(table_name):
                 # If the table doesn't exist, create it based on the DataFrame schema

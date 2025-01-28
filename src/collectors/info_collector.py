@@ -53,7 +53,7 @@ class InfoCollector(BaseCollector):
         FROM {table_name}
         WHERE ticker = :ticker
         """
-        result = self.db_engine.execute(query, {"ticker": ticker}).fetchone()
+        result = self.engine.execute(query, {"ticker": ticker}).fetchone()
         return result["last_update"] if result and result["last_update"] else None
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -87,11 +87,17 @@ class InfoCollector(BaseCollector):
             info_df['updated_at'] = datetime.now()
             info_df['data_source'] = 'yfinance'
 
+            # Ensure these columns exist even if source data is missing
+            for col in ['ticker', 'updated_at', 'data_source']:
+                if col not in info_df.columns:
+                    info_df[col] = None
+
             # Ensure schema matches the DataFrame
             self._ensure_table_schema(table_name, info_df)
 
             # Save data to the database
-            self._save_to_database(info_df, table_name)
+            required_columns = ['ticker', 'updated_at']
+            self._save_to_database(info_df, table_name, required_columns)
             logger.info(f"Successfully fetched and saved data for {ticker} in {table_name}.")
 
         except Exception as e:
