@@ -85,4 +85,5 @@ class StatementsCollector(BaseCollector):
             raise
 
     def refresh_data(self, ticker: str) -> None:
+        """Intentionally left empty - statements don't need refreshing"""
         pass
