@@ -80,6 +80,7 @@ def main(batch_size: int = 10):
         'info': info_collector
     }
 
+
     # ThreadPoolExecutor to handle concurrent refresh tasks
     try:
         with ThreadPoolExecutor(max_workers=batch_size) as executor:
