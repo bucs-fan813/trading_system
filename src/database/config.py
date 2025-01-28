@@ -1,3 +1,5 @@
+# trading_system/src/database/config.py
+
 from dataclasses import dataclass
 from pathlib import Path
 
