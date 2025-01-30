@@ -36,25 +36,19 @@ class InfoCollector(BaseCollector):
 
         flatten(nested_dict)
         return flat_dict
-
-    def _get_last_update_date(self, table_name: str, ticker: str) -> datetime:
-        """
-        Get the last updated date for a specific ticker in the database.
+    
+    def _get_last_update_date(self, table_name: str, ticker: str) -> Optional[datetime]:
+        """Get the last updated date for a specific ticker."""
+        query = text(f"SELECT MAX(updated_at) FROM {table_name} WHERE ticker = :ticker")
         
-        Args:
-            table_name: The name of the database table.
-            ticker: The ticker symbol.
-        
-        Returns:
-            The last updated date as a datetime object or None if no data exists.
-        """
-        query = f"""
-        SELECT MAX(updated_at) AS last_update
-        FROM {table_name}
-        WHERE ticker = :ticker
-        """
-        result = self.engine.execute(query, {"ticker": ticker}).fetchone()
-        return result["last_update"] if result and result["last_update"] else None
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(query, {"ticker": ticker}).scalar()
+                return pd.to_datetime(result) if result else None
+        except exc.OperationalError as e:
+            if "no such table" in str(e):
+                return None
+            raise
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def fetch_company_info(self, ticker: str, table_name: str = "company_info") -> None:
