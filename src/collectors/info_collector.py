@@ -5,8 +5,10 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Dict
+from typing import Dict, Optional
 from src.collectors.base_collector import BaseCollector
+from sqlalchemy import text, exc
+
 
 logger = logging.getLogger(__name__)
 
