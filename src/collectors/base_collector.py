@@ -7,8 +7,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
-from contextlib import contextmanager
-from sqlalchemy import inspect, text, exc
+from contextlib import contextmanager 
+from sqlalchemy import Integer, Float, String, DateTime, text, exc, inspect
+import pandas as pd
+from sqlalchemy import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -134,19 +136,17 @@ class BaseCollector(ABC):
                 dtype_mapping = {}
                 for col in data.columns:
                     if pd.api.types.is_integer_dtype(data[col]):
-                        dtype = 'INTEGER'
+                        dtype_mapping[col] = Integer()
                     elif pd.api.types.is_float_dtype(data[col]):
-                        dtype = 'REAL'
+                        dtype_mapping[col] = Float()
                     elif pd.api.types.is_datetime64_any_dtype(data[col]):
-                        dtype = 'DATETIME'
+                        dtype_mapping[col] = DateTime()
                     else:
-                        # Handle JSON strings and text
-                        dtype = 'TEXT'
-                    dtype_mapping[col] = dtype
-                
+                        dtype_mapping[col] = String()
+
                 data.head(0).to_sql(
                     name=table_name,
-                    con=conn,
+                    con=self.engine,
                     index=False,
                     if_exists='replace',
                     dtype=dtype_mapping
@@ -159,16 +159,16 @@ class BaseCollector(ABC):
 
             # Add missing columns
             for column in new_columns:
-                col_type = 'TEXT'  # Default type for new columns
+                col_type = String()  # Default type for new columns
                 if pd.api.types.is_integer_dtype(data[column]):
-                    col_type = 'INTEGER'
+                    col_type = Integer()
                 elif pd.api.types.is_float_dtype(data[column]):
-                    col_type = 'FLOAT'
+                    col_type = Float()
                 elif pd.api.types.is_datetime64_any_dtype(data[column]):
-                    col_type = 'DATETIME'
+                    col_type = DateTime()
 
                 # Add the column to the table
-                alter_query = text(f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}")
+                alter_query = text(f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type.compile(dialect=self.engine.dialect)}")
                 conn.execute(alter_query)
 
             conn.commit()
