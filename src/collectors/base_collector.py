@@ -8,7 +8,7 @@ from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
 from contextlib import contextmanager
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, exc
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,13 @@ class BaseCollector(ABC):
             with self._db_connection() as conn:
                 result = conn.execute(query, {"ticker": ticker}).scalar()
                 return pd.to_datetime(result) if result else None
-        except SQLAlchemyError as e:
+        except exc.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return None
+            else:
+                logger.error(f"Operational error getting latest date for {ticker}: {e}")
+                raise
+        except exc.SQLAlchemyError as e:
             logger.error(f"Error getting latest date for {ticker}: {e}")
             raise
 

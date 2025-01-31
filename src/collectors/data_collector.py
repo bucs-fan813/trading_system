@@ -48,7 +48,7 @@ def refresh_data_for_ticker(ticker, collectors):
         collectors['price'].refresh_data(ticker)
 
         # Refresh company info
-        collectors['info'].refresh_info(ticker)
+        collectors['info'].refresh_data(ticker)
 
         logger.info(f"Successfully refreshed data for ticker {ticker}.")
     except Exception as e:
