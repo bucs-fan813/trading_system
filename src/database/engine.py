@@ -22,7 +22,6 @@ def create_db_engine(config):
         SQLAlchemyError: If the engine creation fails.
     """
     try:
-        # Create the database engine
         engine = create_engine(
             config.url,
             pool_size=config.pool_size,
