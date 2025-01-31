@@ -130,8 +130,27 @@ class BaseCollector(ABC):
         with self.engine.connect() as conn:
             inspector = inspect(conn)
             if not inspector.has_table(table_name):
-                # If the table doesn't exist, create it based on the DataFrame schema
-                data.head(0).to_sql(table_name, conn, index=False, if_exists='replace')
+                # Create table with explicit schema
+                dtype_mapping = {}
+                for col in data.columns:
+                    if pd.api.types.is_integer_dtype(data[col]):
+                        dtype = 'INTEGER'
+                    elif pd.api.types.is_float_dtype(data[col]):
+                        dtype = 'REAL'
+                    elif pd.api.types.is_datetime64_any_dtype(data[col]):
+                        dtype = 'DATETIME'
+                    else:
+                        # Handle JSON strings and text
+                        dtype = 'TEXT'
+                    dtype_mapping[col] = dtype
+                
+                data.head(0).to_sql(
+                    name=table_name,
+                    con=conn,
+                    index=False,
+                    if_exists='replace',
+                    dtype=dtype_mapping
+                )
                 return
 
             # Fetch existing columns

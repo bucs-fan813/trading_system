@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from typing import Dict, Optional
 from src.collectors.base_collector import BaseCollector
 from sqlalchemy import text, exc
+import json
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,11 @@ class InfoCollector(BaseCollector):
             if not info:
                 logger.warning(f"No company info available for {ticker}.")
                 return
+            
+            # Convert lists/dicts to JSON strings
+            for key, value in info.items():
+                if isinstance(value, (list, dict)):
+                    info[key] = json.dumps(value)
 
             # Flatten and convert to DataFrame
             flat_info = self._flatten_nested_dict(info)
