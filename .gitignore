@@ -7,3 +7,5 @@ __pycache__/
 .ipynb_checkpoints/
 tests/collectors/__pycache__/
 test_trading_system.db
+src/collectors/__pycache__/
+
