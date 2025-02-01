@@ -55,7 +55,7 @@ def refresh_data_for_ticker(ticker, collectors):
     except Exception as e:
         logger.error(f"Error refreshing data for ticker {ticker}: {e}")
 
-def main(batch_size: int = 10):
+def main(all_tickers, batch_size: int = 10):
     """Main function to orchestrate the data collection process."""
 
     # Use the default configuration for SQLite
@@ -78,10 +78,6 @@ def main(batch_size: int = 10):
                 columns = ', '.join([f"{col} TEXT" for col in cols])
                 conn.execute(text(f"CREATE TABLE {table_name} ({columns})"))
         conn.commit()
-
-    # Ticker list
-    with open("tickers.txt", "r") as f:
-        all_tickers = [line.strip() for line in f if line.strip()]
 
     # Select tickers to refresh based on the current day of the month
     today = datetime.now().day
