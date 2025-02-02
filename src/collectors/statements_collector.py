@@ -78,7 +78,6 @@ class StatementsCollector(BaseCollector):
                 # Save to database
                 required_columns = ['date', 'ticker', 'updated_at']
                 self._save_to_database(data, table_name, required_columns)
-                self._save_to_database(data, table_name)
 
         except Exception as e:
             logger.error(f"Error processing {statement_type} for {ticker}: {e}")
