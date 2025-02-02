@@ -129,71 +129,84 @@ class BaseCollector(ABC):
     def _ensure_table_schema(self, table_name: str, data: pd.DataFrame) -> None:
         """
         Ensure the database table schema matches the DataFrame columns.
-
+        
+        This method uses an atomic table creation statement with IF NOT EXISTS
+        to avoid race conditions when multiple threads attempt to create the same table.
+        If the table already exists, any missing columns (based on the DataFrame) are added.
+        
         Args:
             table_name: Name of the database table.
-            data: DataFrame to check columns against the table.
+            data: DataFrame whose columns are used to verify or build the table schema.
         """
         with self.engine.connect() as conn:
             inspector = inspect(conn)
+            
+            # If the table does not exist, create it atomically using IF NOT EXISTS
             if not inspector.has_table(table_name):
-                # Create table with explicit schema
-                dtype_mapping = {}
+                # Generate column definitions for table creation
+                columns = []
                 for col in data.columns:
                     if pd.api.types.is_integer_dtype(data[col]):
-                        dtype_mapping[col] = Integer()
+                        col_type = "INTEGER"
                     elif pd.api.types.is_float_dtype(data[col]):
-                        dtype_mapping[col] = Float()
+                        col_type = "FLOAT"
                     elif pd.api.types.is_datetime64_any_dtype(data[col]):
-                        dtype_mapping[col] = DateTime()
+                        col_type = "DATETIME"
                     else:
-                        dtype_mapping[col] = String()
-
-                data.head(0).to_sql(
-                    name=table_name,
-                    con=self.engine,
-                    index=False,
-                    if_exists='replace',
-                    dtype=dtype_mapping
+                        col_type = "VARCHAR"
+                    
+                    # Quote column names to handle reserved words or special characters
+                    columns.append(f'"{col}" {col_type}')
+                
+                # Construct the DDL statement using IF NOT EXISTS to avoid race conditions
+                create_table = DDL(
+                    f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                        {', '.join(columns)}
+                    )"""
                 )
-                logger.info(f"Created table {table_name} with initial schema.")
-                return
+                
+                try:
+                    conn.execute(create_table)
+                    conn.commit()
+                    logger.info(f"Created table {table_name} with IF NOT EXISTS")
+                except exc.SQLAlchemyError as e:
+                    logger.error(f"Error creating table {table_name}: {e}")
+                    raise
+                return  # Table has been created, so exit early.
+            
+            # If the table already exists, check for missing columns.
+            existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+            # Compare using the original column names, assuming they match exactly.
+            missing_columns = [col for col in data.columns if col not in existing_columns]
 
-            # Fetch existing columns and check case-insensitively
-            existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
-            existing_columns_lower = {col.lower() for col in existing_columns}
-            data_columns_lower = {col.lower() for col in data.columns}
-            new_columns = [col for col in data_columns_lower if col.lower() not in existing_columns_lower]
-
-            # Add missing columns with proper quoting
-            if new_columns:
+            if missing_columns:
+                # Use the engine's identifier preparer to properly quote column names.
                 preparer = self.engine.dialect.identifier_preparer
-                for column in new_columns:
-                    # Determine column type
+                for column in missing_columns:
+                    # Determine the SQL type for the column based on the DataFrame dtype.
                     if pd.api.types.is_integer_dtype(data[column]):
-                        col_type = Integer()
+                        col_type = "INTEGER"
                     elif pd.api.types.is_float_dtype(data[column]):
-                        col_type = Float()
+                        col_type = "FLOAT"
                     elif pd.api.types.is_datetime64_any_dtype(data[column]):
-                        col_type = DateTime()
+                        col_type = "DATETIME"
                     else:
-                        col_type = String()
-
-                    # Quote column name to handle special characters and case
+                        col_type = "VARCHAR"
+                        
                     column_quoted = preparer.quote(column)
-                    type_compiled = col_type.compile(dialect=self.engine.dialect)
-                    alter_query = text(
-                        f"ALTER TABLE {table_name} ADD COLUMN {column_quoted} {type_compiled}"
-                    )
+                    alter_sql = f'ALTER TABLE {table_name} ADD COLUMN {column_quoted} {col_type}'
                     try:
-                        conn.execute(alter_query)
-                        logger.info(f"Added column {column_quoted} to {table_name}.")
+                        conn.execute(text(alter_sql))
+                        logger.info(f"Added column {column_quoted} to {table_name}")
                     except exc.OperationalError as e:
-                        if "duplicate column name" in str(e).lower():
+                        # If the error is due to a duplicate column, log a warning and continue.
+                        if "duplicate column" in str(e).lower():
                             logger.warning(f"Column {column} already exists in {table_name}, skipping.")
                         else:
+                            logger.error(f"Error adding column {column}: {e}")
                             raise
                 conn.commit()
+
 
     @abstractmethod
     def refresh_data(self, ticker: str, **kwargs) -> None:
