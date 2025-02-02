@@ -8,9 +8,9 @@ from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
 from contextlib import contextmanager 
-from sqlalchemy import Integer, Float, String, DateTime, text, exc, inspect
+from sqlalchemy import Integer, Float, String, DateTime, text, exc, inspect, DDL
 import pandas as pd
-from sqlalchemy import inspect
+
 
 logger = logging.getLogger(__name__)
 
@@ -151,27 +151,44 @@ class BaseCollector(ABC):
                     if_exists='replace',
                     dtype=dtype_mapping
                 )
+                logger.info(f"Created table {table_name} with initial schema.")
                 return
 
-            # Fetch existing columns
+            # Fetch existing columns and check case-insensitively
             existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
-            new_columns = [col for col in data.columns if col not in existing_columns]
+            existing_columns_lower = {col.lower() for col in existing_columns}
+            data_columns_lower = {col.lower() for col in data.columns}
+            new_columns = [col for col in data.columns if col.lower() not in existing_columns_lower]
 
-            # Add missing columns
-            for column in new_columns:
-                col_type = String()  # Default type for new columns
-                if pd.api.types.is_integer_dtype(data[column]):
-                    col_type = Integer()
-                elif pd.api.types.is_float_dtype(data[column]):
-                    col_type = Float()
-                elif pd.api.types.is_datetime64_any_dtype(data[column]):
-                    col_type = DateTime()
+            # Add missing columns with proper quoting
+            if new_columns:
+                preparer = self.engine.dialect.identifier_preparer
+                for column in new_columns:
+                    # Determine column type
+                    if pd.api.types.is_integer_dtype(data[column]):
+                        col_type = Integer()
+                    elif pd.api.types.is_float_dtype(data[column]):
+                        col_type = Float()
+                    elif pd.api.types.is_datetime64_any_dtype(data[column]):
+                        col_type = DateTime()
+                    else:
+                        col_type = String()
 
-                # Add the column to the table
-                alter_query = text(f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type.compile(dialect=self.engine.dialect)}")
-                conn.execute(alter_query)
-
-            conn.commit()
+                    # Quote column name to handle special characters and case
+                    column_quoted = preparer.quote(column)
+                    type_compiled = col_type.compile(dialect=self.engine.dialect)
+                    alter_query = text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_quoted} {type_compiled}"
+                    )
+                    try:
+                        conn.execute(alter_query)
+                        logger.info(f"Added column {column_quoted} to {table_name}.")
+                    except exc.OperationalError as e:
+                        if "duplicate column name" in str(e).lower():
+                            logger.warning(f"Column {column} already exists in {table_name}, skipping.")
+                        else:
+                            raise
+                conn.commit()
 
     @abstractmethod
     def refresh_data(self, ticker: str, **kwargs) -> None:

@@ -62,23 +62,6 @@ def main(all_tickers, batch_size: int = 10):
     db_config = DatabaseConfig.default()
     db_engine = create_db_engine(db_config)
 
-    # Initialize all required tables
-    required_tables = {
-        'company_info': ['ticker', 'updated_at'],
-        'daily_prices': ['ticker', 'date'],
-        'balance_sheet': ['ticker', 'date'],
-        'income_statement': ['ticker', 'date'],
-        'cash_flow': ['ticker', 'date']
-    }
-
-    with db_engine.connect() as conn:
-        for table_name, cols in required_tables.items():
-            if not inspect(conn).has_table(table_name):
-                # Create minimal table structure
-                columns = ', '.join([f"{col} TEXT" for col in cols])
-                conn.execute(text(f"CREATE TABLE {table_name} ({columns})"))
-        conn.commit()
-
     # Select tickers to refresh based on the current day of the month
     today = datetime.now().day
     tickers_to_refresh = select_tickers_for_refresh(all_tickers, today)

@@ -59,7 +59,7 @@ class StatementsCollector(BaseCollector):
                 return
 
             # Process the data
-            data = data.fillna(pd.NA).T
+            data = data.fillna(pd.NA).infer_objects(copy=False).T 
             data['ticker'] = ticker
             data = data.reset_index().rename(columns={'index': 'date'})
 

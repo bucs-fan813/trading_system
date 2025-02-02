@@ -44,7 +44,7 @@ class PriceCollector(BaseCollector):
             data['updated_at'] = datetime.now()
             data['data_source'] = 'yfinance'
 
-            required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker', 'updated_at', 'data_source']
             
             # Ensure table schema matches data
             self._ensure_table_schema(table_name, data)
@@ -80,7 +80,7 @@ class PriceCollector(BaseCollector):
             data['updated_at'] = datetime.now()
             data['data_source'] = 'yfinance'
 
-            required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'ticker', 'updated_at', 'data_source']
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker', 'updated_at', 'data_source']
 
             # Replace data in the database
             self._delete_existing_data(table_name, ticker)
