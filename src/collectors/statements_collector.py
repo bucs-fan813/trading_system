@@ -72,6 +72,13 @@ class StatementsCollector(BaseCollector):
                 data['updated_at'] = datetime.now()
                 data['data_source'] = 'yfinance'
 
+                data.columns = (
+                    data.columns.str.strip()
+                    .str.lower()
+                    .str.replace(' ', '_')
+                    .str.replace(r'[^\w_]', '', regex=True)
+                )
+
                 # Dynamically update database schema if needed
                 self._ensure_table_schema(table_name, data)
 

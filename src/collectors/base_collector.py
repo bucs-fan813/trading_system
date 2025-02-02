@@ -57,7 +57,12 @@ class BaseCollector(ABC):
         return True
 
     def _delete_existing_data(self, table_name: str, ticker: str) -> None:
-        """Delete existing data for a specific ticker."""
+        """
+        Delete existing data for a specific ticker.
+        """
+        if not inspect(self.engine).has_table(table_name):
+            return  # Skip deletion if table doesn't exist
+        
         query = text(f"DELETE FROM {table_name} WHERE ticker = :ticker")
         
         try:
@@ -158,7 +163,7 @@ class BaseCollector(ABC):
             existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
             existing_columns_lower = {col.lower() for col in existing_columns}
             data_columns_lower = {col.lower() for col in data.columns}
-            new_columns = [col for col in data.columns if col.lower() not in existing_columns_lower]
+            new_columns = [col for col in data_columns_lower if col.lower() not in existing_columns_lower]
 
             # Add missing columns with proper quoting
             if new_columns:

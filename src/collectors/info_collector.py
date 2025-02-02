@@ -94,6 +94,13 @@ class InfoCollector(BaseCollector):
                 if col not in info_df.columns:
                     info_df[col] = None
 
+            info_df.columns = (
+                info_df.columns.str.strip()
+                .str.lower()
+                .str.replace(' ', '_')
+                .str.replace(r'[^\w_]', '', regex=True)
+            )
+
             # Ensure schema matches the DataFrame
             self._ensure_table_schema(table_name, info_df)
 
