@@ -1,3 +1,5 @@
+# trading_system/main.py
+
 import src.collectors.data_collector as data_collector
 import pandas as pd
 
@@ -14,7 +16,9 @@ def add_ticker_suffix(x):
 tickers["Ticker"] = tickers.apply(add_ticker_suffix, axis = 1)
 all_tickers = tickers["Ticker"].tolist()
 
-all_tickers = all_tickers[:10]
+all_tickers = all_tickers[:2]
+
+print(all_tickers)
 
 data_collector.main(all_tickers)
 
