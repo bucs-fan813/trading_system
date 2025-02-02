@@ -44,6 +44,15 @@ class PriceCollector(BaseCollector):
             data['updated_at'] = datetime.now()
             data['data_source'] = 'yfinance'
 
+            data = data.reset_index().rename(columns={
+                'Date': 'date',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+
             required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker', 'updated_at', 'data_source']
             
             # Ensure table schema matches data
@@ -79,6 +88,15 @@ class PriceCollector(BaseCollector):
             data['ticker'] = ticker
             data['updated_at'] = datetime.now()
             data['data_source'] = 'yfinance'
+
+            data = data.reset_index().rename(columns={
+                'Date': 'date',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
 
             required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker', 'updated_at', 'data_source']
 
