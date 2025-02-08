@@ -17,4 +17,4 @@ class DatabaseConfig:
         base_path = Path(__file__).resolve().parent.parent.parent / "data"
         base_path.mkdir(exist_ok=True)  # Create 'data' directory if it doesn't exist
         database_path = base_path / "trading_system.db"
-        return DatabaseConfig(url=f"sqlite:///{database_path}?isolation_level=EXCLUSIVE")
+        return DatabaseConfig(url=f"sqlite:///{database_path}")
