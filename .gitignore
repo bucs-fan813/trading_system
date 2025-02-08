@@ -9,3 +9,7 @@ __pycache__/
 test_trading_system.db
 src/data/trading_system.db
 src/data/trading_system.db-journal
+data/trading_system.db
+data/trading_system.db-shm
+data/trading_system.db
+data/trading_system.db-wal
