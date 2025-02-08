@@ -31,13 +31,8 @@ class BaseCollector(ABC):
     def _db_connection(self):
         """Context manager for database connections with retry"""
         connection = self.engine.connect()
-        transaction = connection.begin()
         try:
             yield connection
-            transaction.commit()
-        except Exception as e:
-            transaction.rollback()
-            raise
         finally:
             connection.close()
 
@@ -74,7 +69,7 @@ class BaseCollector(ABC):
         try:
             with self._db_connection() as conn:
                 conn.execute(query, {"ticker": ticker})
-                # conn.commit()
+                conn.commit()
             logger.info(f"Deleted existing data for {ticker} in {table_name}")
         except SQLAlchemyError as e:
             logger.error(f"Error deleting data for {ticker} in {table_name}: {e}")
@@ -127,7 +122,7 @@ class BaseCollector(ABC):
                     method='multi',
                     chunksize=1000
                 )
-                # conn.commit()
+                conn.commit()
                 
             logger.info(f"Successfully saved {len(df)} rows to {table_name}")
             
