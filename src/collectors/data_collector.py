@@ -8,7 +8,7 @@ from src.collectors.info_collector import InfoCollector
 from src.collectors.statements_collector import StatementsCollector
 from datetime import datetime
 import random
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from sqlalchemy import inspect, text
 
 # Configure logging
@@ -55,7 +55,7 @@ def refresh_data_for_ticker(ticker, collectors):
     except Exception as e:
         logger.error(f"Error refreshing data for ticker {ticker}: {e}")
 
-def main(all_tickers, batch_size: int = 10):
+def main(all_tickers, batch_size: int = 5):
     """Main function to orchestrate the data collection process."""
 
     # Use the default configuration for SQLite
@@ -80,7 +80,7 @@ def main(all_tickers, batch_size: int = 10):
 
     # ThreadPoolExecutor to handle concurrent refresh tasks
     try:
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             # Refresh data concurrently for selected tickers
             futures = []
             for ticker in tickers_to_refresh:
@@ -95,7 +95,7 @@ def main(all_tickers, batch_size: int = 10):
                     logger.error(f"Error processing ticker: {e}")
 
         # Process financial statements for each ticker
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             futures = []
             for statement_type, fetch_func in statements_collector.financial_statements:
                 for ticker in all_tickers:
@@ -115,7 +115,7 @@ def main(all_tickers, batch_size: int = 10):
                     logger.error(f"Error processing financial statement: {e}")
 
         # Process daily prices for all tickers
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             futures = []
             for ticker in all_tickers:
                 future = executor.submit(price_collector.fetch_price_data, ticker)
@@ -131,7 +131,7 @@ def main(all_tickers, batch_size: int = 10):
         logger.info(" Price data collection process completed successfully.")
 
         # Process company info for all tickers
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             futures = []
             for ticker in all_tickers:
                 future = executor.submit(info_collector.fetch_company_info, ticker)

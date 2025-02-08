@@ -3,13 +3,14 @@
 from typing import Callable, Optional, Dict, Any
 from datetime import datetime
 import pandas as pd
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy.sql import text
 from abc import ABC, abstractmethod
 import logging
 from contextlib import contextmanager 
 from sqlalchemy import Integer, Float, String, DateTime, text, exc, inspect, DDL
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 
 logger = logging.getLogger(__name__)
@@ -28,10 +29,15 @@ class BaseCollector(ABC):
         
     @contextmanager
     def _db_connection(self):
-        """Context manager for database connections."""
+        """Context manager for database connections with retry"""
         connection = self.engine.connect()
+        transaction = connection.begin()
         try:
             yield connection
+            transaction.commit()
+        except Exception as e:
+            transaction.rollback()
+            raise
         finally:
             connection.close()
 
@@ -92,6 +98,9 @@ class BaseCollector(ABC):
             logger.error(f"Error getting latest date for {ticker}: {e}")
             raise
 
+    @retry(stop=stop_after_attempt(3),
+       wait=wait_fixed(1),
+       retry=retry_if_exception_type(OperationalError))
     def _save_to_database(self, df: pd.DataFrame, table_name: str, 
                          required_columns: list) -> None:
         """

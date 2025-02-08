@@ -16,7 +16,7 @@ def add_ticker_suffix(x):
 tickers["Ticker"] = tickers.apply(add_ticker_suffix, axis = 1)
 all_tickers = tickers["Ticker"].tolist()
 
-all_tickers = all_tickers[:2]
+all_tickers = all_tickers[:25]
 
 print(all_tickers)
 

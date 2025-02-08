@@ -8,3 +8,4 @@ __pycache__/
 */__pycache__/
 test_trading_system.db
 src/data/trading_system.db
+src/data/trading_system.db-journal

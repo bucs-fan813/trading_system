@@ -2,6 +2,7 @@
 
 from sqlalchemy import create_engine, exc, event, text
 import logging
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,8 @@ def create_db_engine(config):
     try:
         engine = create_engine(
             config.url,
-            pool_size=config.pool_size,
-            max_overflow=config.max_overflow,
-            pool_pre_ping=True  # Automatically validate connections in the pool
+            poolclass=NullPool,  # Disable connection pooling
+            connect_args={"check_same_thread": False},  # Allow multi-thread access
         )
         
         # Add connection validation to ensure a healthy connection
