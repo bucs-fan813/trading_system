@@ -26,7 +26,7 @@ def create_db_engine(config):
             # Disable connection pooling since SQLite isn’t designed for high concurrency.
             poolclass=NullPool,
             # Allow multi-thread access; add a timeout so SQLite will wait before erroring.
-            connect_args={"check_same_thread": False, "timeout": 30},
+            connect_args={"check_same_thread": False, "timeout": 60},
         )
         
         # Set SQLite-specific PRAGMAs on each new connection.
@@ -36,7 +36,7 @@ def create_db_engine(config):
             # Enable WAL mode which improves concurrent read/write performance.
             cursor.execute("PRAGMA journal_mode=WAL;")
             # Increase busy timeout (in milliseconds). Adjust as needed.
-            cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.execute("PRAGMA busy_timeout=60000;")
             cursor.close()
 
         # Optional: Validate connection health.
