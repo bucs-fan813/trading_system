@@ -1,4 +1,4 @@
-algo_trading/
+trading_system/
 │
 ├── data/
 │   ├── tickers.csv                # File containing the list of tickers
@@ -21,7 +21,7 @@ algo_trading/
 │   │   ├── logging_config.py      # Logging configuration
 │   │   └── settings.py            # Global configurations
 │   │
-│   ├── main.py                    # Entry point for the application
+│   └── main.py                    # Entry point for the application
 │
 ├── tests/
 │   ├── test_financial_data.py     # Unit tests for financial data collection
