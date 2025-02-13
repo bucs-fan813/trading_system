@@ -9,6 +9,10 @@ from sqlalchemy import text
 from src.database.config import DatabaseConfig
 from src.database.engine import create_db_engine
 
+class DataRetrievalError(Exception):
+    """Custom exception for data retrieval failures"""
+    pass
+
 class BaseStrategy(ABC):
     """
     Abstract base class for trading strategies
@@ -48,7 +52,8 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def get_historical_prices(self, ticker: str, lookback: int = 252) -> pd.DataFrame:
+    def get_historical_prices(self, ticker: str, lookback: int = 252,
+                              data_source: str = 'yfinance') -> pd.DataFrame:
         """
         Retrieve historical price data
 
@@ -59,16 +64,18 @@ class BaseStrategy(ABC):
         Returns:
             DataFrame with historical price data
         """
+        lookback = int(lookback)
         query = text(f"""
             SELECT date, open, high, low, close, volume 
-            FROM daily_price_data 
+            FROM daily_prices
             WHERE ticker = :ticker 
+            AND data_source = :data_source
             ORDER BY date DESC 
             LIMIT {lookback}
         """)
-        return self._execute_query(query, {'ticker': ticker}, index_col='date')
+        return self._execute_query(query, {'ticker': ticker, 'data_source': data_source}, index_col='date')
 
-    def get_company_info(self, ticker: str) -> pd.Series:
+    def get_company_info(self, ticker: str, data_source: str = 'yfinance') -> pd.Series:
         """
         Retrieve fundamental company information
 
@@ -81,13 +88,20 @@ class BaseStrategy(ABC):
         query = text("""
             SELECT * FROM company_info 
             WHERE ticker = :ticker 
+            AND data_source = :data_source         
             ORDER BY updated_at DESC 
             LIMIT 1
         """)
-        df = self._execute_query(query, {'ticker': ticker})
+        df = self._execute_query(query, {'ticker': ticker, 'data_source': data_source})
+
+        if df.empty:
+            self.logger.error(f"No company info found for {ticker}")
+            raise DataRetrievalError(f"Company info not found for {ticker}")
+
         return df.iloc[0]
 
-    def get_financials(self, ticker: str, statement_type: str, lookback: int = 4) -> pd.DataFrame:
+    def get_financials(self, ticker: str, statement_type: str, lookback: int = 4,
+                       data_source: str = 'yfinance') -> pd.DataFrame:
         """
         Retrieve financial statements
 
@@ -100,17 +114,23 @@ class BaseStrategy(ABC):
             DataFrame with financial statement data
         """
         table_map = {
-            'balance_sheet': 'balance_sheet_data',
-            'income_statement': 'income_statement_data',
-            'cash_flow': 'cash_flow_data'
+            'balance_sheet': 'balance_sheet',
+            'income_statement': 'income_statement',
+            'cash_flow': 'cash_flow'
         }
+
+        if statement_type not in table_map:
+            raise ValueError(f"Invalid statement type: {statement_type}. "
+                            f"Valid options: {list(table_map.keys())}")
+
         query = text(f"""
             SELECT * FROM {table_map[statement_type]} 
             WHERE ticker = :ticker 
+            AND data_source = :data_source
             ORDER BY date DESC 
             LIMIT {lookback}
         """)
-        return self._execute_query(query, {'ticker': ticker})
+        return self._execute_query(query, {'ticker': ticker, 'data_source': data_source})
 
     def _execute_query(self, query, params: dict, index_col: Optional[str] = None) -> pd.DataFrame:
         """
@@ -158,4 +178,8 @@ class BaseStrategy(ABC):
     def __del__(self):
         """Clean up database engine resources"""
         if hasattr(self, 'db_engine'):
-            self.db_engine.dispose()
+            try:
+                self.db_engine.dispose()
+                self.logger.debug("Database engine disposed successfully")
+            except Exception as e:
+                self.logger.error(f"Error disposing database engine: {str(e)}")
