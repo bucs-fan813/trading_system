@@ -1,35 +1,45 @@
 trading_system/
 │
 ├── data/
-│   ├── tickers.csv                # File containing the list of tickers
+│   ├── ticker.xlsx                     # Excel file containing ticker information
+│   ├── trading_system.db               # SQLite main database
+│   ├── trading_system.db-shm           # SQLite database shared memory file
+│   ├── trading_system.db-wal           # SQLite database write-ahead log file
+│   ├── trading_system.duckdb           # DuckDB database file only to be used in future
 │
 ├── src/
 │   ├── database/
-│   │   ├── __init__.py            # Package initialization
-│   │   ├── config.py              # DatabaseConfig class
-│   │   ├── engine.py              # Database engine creation utilities
-│   │   └── utils.py               # Database helper functions
+│   │   ├── __init__.py                 # Package initialization
+│   │   ├── config.py                   # DatabaseConfig class
+│   │   ├── engine.py                   # Database engine creation utilities
+│   │   └── utils.py                    # Database helper functions
 │   │
 │   ├── collectors/
-│   │   ├── __init__.py            # Package initialization
-│   │   ├── financial_data.py      # Financial data collection logic
-│   │   ├── price_data.py          # Price data collection logic
-│   │   └── company_info.py        # Company info data collection logic
+│   │   ├── __init__.py                 # Package initialization
+│   │   ├── base_collector.py           # Base Class for data colectors to fetch data from yfinance and store in DB
+│   │   ├── price_collector.py          # Collects Daily Price data and stores in DB
+│   │   ├── info_collector.py           # Collects company info data and stores in DB
+│   │   ├── statements_collector.py     # Collects cashflow, income statements and baance sheet data and stores in DB
+│   │   └── company_info.py             # Company info data collection logic
 │   │
-│   ├── config/
-│   │   ├── __init__.py            # Package initialization
-│   │   ├── logging_config.py      # Logging configuration
-│   │   └── settings.py            # Global configurations
+│   ├── config/                         # Configuration files
 │   │
-│   └── main.py                    # Entry point for the application
+│   ├── portfolio/                      # Portfolio management logic
+│   │
+│   ├── strategies/                     # Trading strategies
+│   │
+│   └── utils/                          # Utility functions
 │
 ├── tests/
-│   ├── test_financial_data.py     # Unit tests for financial data collection
-│   ├── test_price_data.py         # Unit tests for price data collection
-│   ├── test_company_info.py       # Unit tests for company info collection
-│   └── conftest.py                # Shared test fixtures
+│   ├── __init__.py                     # Package initialization
+│   ├── Claude_testCase.py              # Test cases for Claude
+│   ├── collectors/                     # Tests for collectors
+│   ├── database/                       # Tests for database
 │
-├── requirements.txt               # Python dependencies
-├── pyproject.toml                 # Poetry configuration
-├── README.md                      # Project overview and usage instructions
-└── .env                           # Environment variables
+├── .env                                # Environment variables
+├── .gitignore                          # Git ignore file
+├── main.py                             # Main application script
+├── poetry.lock                         # Poetry lock file
+├── pyproject.toml                      # Poetry project file
+├── README.md                           # Project README file
+├── requirements.txt                    # Python dependencies
