@@ -1,3 +1,5 @@
+# src/config/logging_config.py
+
 import logging
 
 def configure_logging():
