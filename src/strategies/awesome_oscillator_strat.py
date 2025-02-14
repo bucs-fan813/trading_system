@@ -117,31 +117,15 @@ class AwesomeOscillatorStrategy(BaseStrategy):
     #         assert 'signal_strength' in signals_df.columns
 
 """ 
-if __name__ == '__main__':
-    # Example Usage
-    from src.database.config import DatabaseConfig
+from src.database.config import DatabaseConfig
+from src.strategies.ao_crossover_strat import AwesomeOscillatorStrategy
 
-    # Configure logging using the function from logging_config.py
-    configure_logging()
-    logger = logging.getLogger(__name__) # Get logger for this module in example
+# Get default database config (or load from elsewhere if needed)
+db_config = DatabaseConfig.default()
 
-    db_config = DatabaseConfig(
-        db_name='your_db_name.db', # Replace with your db name
-        db_type='sqlite'
-    )
+# Instantiate the strategy, passing the db_config
+ao_strategy = AwesomeOscillatorStrategy(db_config, params={'short_period': 5, 'long_period': 34})
 
-    ao_strategy = AwesomeOscillatorStrategy(db_config, params={'short_period': 5, 'long_period': 34})
-
-    ticker_symbol = 'AAPL' # Example ticker
-    try:
-        signals_df = ao_strategy.generate_signals(ticker_symbol)
-
-        if not signals_df.empty:
-            print(f"\nGenerated AO Crossover Signals for {ticker_symbol}:")
-            print(signals_df.tail(10)) # Print last 10 signals
-        else:
-            print(f"Could not generate AO Crossover Signals for {ticker_symbol} due to insufficient data.")
-
-    except (DataRetrievalError, ValueError) as e: # Catch specific exceptions
-        print(f"Error processing {ticker_symbol}: {e}")
-        logger.error(f"Example Usage Error: {e}") # Log error in example as well """
+# Now you can use ao_strategy to generate signals, and it will use the database engine
+signals_df = ao_strategy.generate_signals(ticker_symbol='AAPL')
+"""

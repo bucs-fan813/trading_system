@@ -30,6 +30,11 @@ class PriceCollector(BaseCollector):
                 start_date = latest_date + timedelta(days=1)
 
                 data = stock.history(start=start_date.strftime('%Y-%m-%d'))
+                
+                if latest_date and not data.empty:  #remove any potential duplicates
+                    data = data[data.index > latest_date]
+
+
             else:
                 logger.info(f"No latest date found for {ticker}. Fetching data from the beginning.")
                 data = stock.history(period="max")
