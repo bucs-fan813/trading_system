@@ -44,14 +44,14 @@ class CCIStrategy(BaseStrategy):
             )
 
             # Require 2*period for stable calculations
-            if not self._validate_data(historical_data, min_records=2*self.cci_period):
+            if not self._validate_data(historical_data, min_records=2 * self.cci_period):
                 return pd.DataFrame()
 
             # CCI Calculation
             typical_price = (historical_data['high'] + historical_data['low'] + historical_data['close']) / 3
             sma_tp = typical_price.rolling(window=self.cci_period, min_periods=self.cci_period).mean()
 
-            mean_deviation = typical_price.rolling(window=self.cci_period).apply(
+            mean_deviation = typical_price.rolling(window=self.cci_period, min_periods=self.cci_period).apply(
                 lambda x: np.mean(np.abs(x - np.mean(x)))
             )
             mean_deviation = mean_deviation.replace(0, np.nan)  # Prevent division by zero
@@ -63,23 +63,20 @@ class CCIStrategy(BaseStrategy):
             signals['close'] = historical_data['close']
             signals['cci'] = cci_indicator
 
-            # Corrected signal conditions
+            # Corrected signal conditions: Detect crossovers using previous day's CCI value.
             cci_shifted = signals['cci'].shift(1)
             buy_condition = (cci_shifted < self.cci_lower_band) & (signals['cci'] > self.cci_lower_band)
             sell_condition = (cci_shifted > self.cci_upper_band) & (signals['cci'] < self.cci_upper_band)
-            neutral_condition = ~buy_condition & ~sell_condition
 
-            # Signal generation
+            # Signal generation: 1 for buy, -1 for sell, 0 for no action.
             signals['signal'] = 0
             signals.loc[buy_condition, 'signal'] = 1
             signals.loc[sell_condition, 'signal'] = -1
 
-            # Signal strength calculation
+            # Signal strength calculation: Proximity to the threshold values.
             signals['signal_strength'] = 0.0
             signals.loc[buy_condition, 'signal_strength'] = signals['cci'] - self.cci_lower_band
             signals.loc[sell_condition, 'signal_strength'] = self.cci_upper_band - signals['cci']
-
-            # --- REMOVE INCORRECT "Cleanup consecutive signals" SECTION COMPLETELY ---
 
             return signals[['close', 'cci', 'signal', 'signal_strength']].copy()
 
