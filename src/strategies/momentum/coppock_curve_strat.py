@@ -23,32 +23,59 @@ class CoppockCurveStrategy(BaseStrategy):
         self._init_strength_params()
 
     def _get_validated_prices(self, ticker: str) -> pd.DataFrame:
-        """Retrieve and validate price data with sufficient history"""
-        # Calculate required history: ROC periods + WMA window + buffer
+        """Enhanced data validation with gap checking"""
         min_periods = max(self.roc1_days, self.roc2_days) + self.wma_lookback + 21
         prices = self.get_historical_prices(ticker, lookback=min_periods)
         
         if not self._validate_data(prices, min_periods):
-            self.logger.warning(f"Insufficient data for {ticker}. Need {min_periods} days, got {len(prices)}")
             return pd.DataFrame()
-        return prices[['close']].dropna()
+        
+        # Check for data continuity
+        date_diff = prices.index.to_series().diff().dt.days
+        if (date_diff > 5).any():
+            self.logger.warning(f"Gaps >5 days detected in {ticker} data")
+        
+        return prices[['close']].ffill().dropna()
 
     def _calculate_coppock_curve(self, close: pd.Series) -> pd.Series:
-        """Calculate Coppock Curve with proper monthly conversion"""
-        # Convert ROC periods from months to days
-        roc1 = close.pct_change(self.roc1_days).mul(100)
-        roc2 = close.pct_change(self.roc2_days).mul(100)
+        """
+        Robust Coppock calculation with enhanced NA handling and logical correctness.
+
+        This is a revised version of the Coppock Curve calculation method, focusing on:
+            - Robustness against NaN values and empty series.
+            - Logical correctness in WMA calculation.
+            - Maintaining the original function structure as a method.
+
+        Args:
+            close: pandas Series representing the closing prices.
+
+        Returns:
+            pandas Series representing the Coppock Curve. Returns an empty Series if input is empty or
+            if there is insufficient data to calculate the WMA.
+        """
+        if not isinstance(close, pd.Series):
+            raise TypeError("Input 'close' must be a pandas Series.")
+        if close.empty:
+            return pd.Series(dtype=float)
+
+        # Forward fill up to 5 days to handle minor gaps
+        close_filled = close.ffill(limit=5)
+
+        # Calculate Rate of Change (ROC) for two periods
+        roc1 = close_filled.pct_change(self.roc1_days).mul(100)
+        roc2 = close_filled.pct_change(self.roc2_days).mul(100)
+
+        # Combine ROCs and remove any rows with NaN
         combined_roc = (roc1 + roc2).dropna()
-        
+
         if len(combined_roc) < self.wma_lookback:
-            return pd.Series(dtype=float, index=combined_roc.index)
-        
-        # Vectorized WMA calculation
+            return pd.Series(dtype=float, index=close.index) # Return empty Series with original index
+
+        # Vectorized WMA calculation with min_periods for robustness
         wma_weights = np.arange(1, self.wma_lookback + 1)
-        wma = (
-            combined_roc
-            .rolling(self.wma_lookback)
-            .apply(lambda x: np.dot(x, wma_weights) / wma_weights.sum(), raw=True)
+        wma = combined_roc.rolling(window=self.wma_lookback, min_periods=int(self.wma_lookback * 0.8)).apply(
+            lambda x: np.dot(x, wma_weights) / wma_weights.sum(),
+            raw=True
         )
         return wma
 
@@ -118,9 +145,14 @@ class CoppockCurveStrategy(BaseStrategy):
             default=0
         )
         
-        # Clean position tracking
-        df['position'] = df['signal'].replace(0, method='ffill').fillna(0).astype(int)
-        
+        df['position'] = (
+                df['signal']
+                .replace(0, np.nan)
+                .ffill()
+                .fillna(0)
+                .astype(int)
+        )
+
         return df[['close', 'cc', 'signal', 'position', 'strength_raw']]
 
     def _get_rolling_condition(self, series: pd.Series, condition_type: str) -> pd.Series:
@@ -133,7 +165,7 @@ class CoppockCurveStrategy(BaseStrategy):
         else:
             raise ValueError(f"Invalid condition type: {condition_type}")
         
-        return mask.fillna(0).astype(bool).shift().fillna(False)
+        return (mask.fillna(False).astype(bool).shift().fillna(False))
 
     def _calculate_strength(self, cc: pd.Series, neg_mask: pd.Series, pos_mask: pd.Series) -> pd.Series:
         """Calculate momentum strength relative to recent history"""
