@@ -1,133 +1,195 @@
-# trading_system/src/strategies/awesome_oscillator_strat.py
+# trading_system/src/strategies/momentum/awesome_oscillator_strat.py
 
 import pandas as pd
-import numpy as np  # Consider removing this if not required
+import numpy as np
 from typing import Dict, Optional
 import logging
+from sqlalchemy import text
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.database.config import DatabaseConfig
 
-# Import the configure_logging function if needed for global logging configuration
-from src.config.logging_config import configure_logging
-
 class AwesomeOscillatorStrategy(BaseStrategy):
     """
-    Awesome Oscillator (AO) Crossover Strategy for production use.
+    Awesome Oscillator (AO) Crossover Strategy with backtesting support.
     
-    This strategy calculates the Awesome Oscillator (AO) as the difference between 
-    a short-term and a long-term simple moving average (SMA) of the median price,
-    where the median price is computed as the average of the high and low price.
-    A buy signal is generated when the AO crosses above zero from a negative value,
-    indicating upward momentum, and a sell signal is generated when the AO crosses
-    below zero from a positive value, indicating downward momentum. Signal strength 
-    is captured as the absolute value of the AO at the point of the crossover.
+    The strategy computes the Awesome Oscillator (AO) by taking the difference
+    between a short-term and a long-term SMA of the median price (average of high and low).
     
-    The strategy retrieves historical price data stored in an SQLite database 
-    (specifically from the 'daily_prices' table), computes the AO, and generates 
-    trading signals accordingly.
+    It supports backtesting over a specified date range, calculating a 'position'
+    that is updated when a buy signal (AO crosses above 0) or a sell signal (AO 
+    crosses below 0) is triggered. Additionally, a flag allows you to extract just the
+    last signal (useful for an end-of-day decision).
     """
-
+    
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize Awesome Oscillator Strategy.
+        Initialize the Awesome Oscillator Strategy.
         
-        Args:
-            db_config (DatabaseConfig): Database configuration settings.
-            params (Optional[Dict]): Strategy-specific parameters.
+        Parameters:
+            db_config (DatabaseConfig): Database configuration.
+            params (Optional[Dict]): Strategy parameters.
                 Expected keys: 'short_period' and 'long_period'.
         """
         default_params = {'short_period': 5, 'long_period': 34}
-        # Use provided parameters or fall back to defaults
         params = params if params is not None else default_params
         super().__init__(db_config, params)
+        
         self.short_period = int(params.get('short_period', default_params['short_period']))
         self.long_period = int(params.get('long_period', default_params['long_period']))
-        # Use the strategy's class name for logging consistency
         self.logger = logging.getLogger(self.__class__.__name__)
         
         if self.short_period >= self.long_period:
             raise ValueError("Short SMA period must be less than long SMA period")
-            
-    def generate_signals(self, ticker: str) -> pd.DataFrame:
+    
+    def generate_signals(
+        self,
+        ticker: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        initial_position: int = 0,
+        latest_only: bool = False,
+    ) -> pd.DataFrame:
         """
-        Generate Awesome Oscillator crossover trading signals with signal strength.
+        Generate AO signals and simulate positions over a time period.
         
-        Args:
+        If start_date and end_date are provided, price data is pulled for that period.
+        Otherwise, a safety-buffer lookback period is used.
+        
+        Parameters:
             ticker (str): Stock ticker symbol.
-            
+            start_date (Optional[str]): Start date in 'YYYY-MM-DD' format for backtesting.
+            end_date (Optional[str]): End date in 'YYYY-MM-DD' format for backtesting.
+            initial_position (int): The starting position (e.g., 0 for no position).
+            latest_only (bool): If True, return only the last date’s signal.
+        
         Returns:
-            pd.DataFrame: DataFrame containing 'close', 'ao', 'signal', and 'signal_strength'
-                          indexed by date.
+            pd.DataFrame: DataFrame with columns:
+                'close', 'ao', 'signal', 'signal_strength', and 'position',
+                indexed by date.
         """
         if not isinstance(ticker, str) or not ticker:
-            self.logger.error(f"Invalid ticker input: {ticker}. Must be a non-empty string.")
-            raise ValueError(f"Ticker must be a non-empty string, got: {ticker}")
-
-        # Determine the minimum number of data points needed based on the SMA periods
-        required_lookback = max(self.long_period, self.short_period) + 2
-        # Use a safety buffer by fetching twice as many records
-        lookback_buffer = required_lookback * 2
-        try:
-            historical_data = self.get_historical_prices(ticker, lookback=lookback_buffer)
-        except DataRetrievalError as e:
-            self.logger.error(f"Data retrieval failed for {ticker}: {e}")
-            raise
+            self.logger.error("Ticker must be a non-empty string.")
+            raise ValueError("Ticker must be a non-empty string.")
         
-        if not self._validate_data(historical_data, min_records=required_lookback):
-            self.logger.warning(f"Insufficient data for AO calculation for {ticker}. Required {required_lookback} records.")
+        # Retrieve historical data either over a provided date range or using a lookback window.
+        if start_date and end_date:
+            historical_data = self.get_prices_by_date(ticker, start_date, end_date)
+        else:
+            # Use a safety buffer lookback (twice the period) if no dates are provided.
+            lookback_buffer = 2 * max(self.short_period, self.long_period)
+            historical_data = self.get_historical_prices(ticker, lookback=lookback_buffer)
+            # When using lookback data, sort the dates in ascending order.
+            historical_data = historical_data.sort_index()
+        
+        required_records = max(self.short_period, self.long_period)
+        if not self._validate_data(historical_data, min_records=required_records):
+            self.logger.warning(
+                f"Insufficient data for AO calculation for {ticker}. Required at least {required_records} records."
+            )
             return pd.DataFrame()
-
-        df = historical_data.copy()
-        signals_df = self._calculate_signals(df)
+        
+        signals_df = self._calculate_signals(historical_data)
+        signals_df = self._simulate_positions(signals_df, initial_position)
+        
+        if latest_only:
+            # Return only the last available signal.
+            return signals_df.tail(1)
         return signals_df
 
-    def _calculate_signals(self, hist_data: pd.DataFrame) -> pd.DataFrame:
+    def get_prices_by_date(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        data_source: str = "yfinance"
+    ) -> pd.DataFrame:
         """
-        Core signal generation logic extracted to this method.
+        Retrieve historical price data within a given date range.
         
-        Args:
-            hist_data (pd.DataFrame): Historical price data.
+        Parameters:
+            ticker (str): Stock ticker symbol.
+            start_date (str): Start date in 'YYYY-MM-DD' format.
+            end_date (str): End date in 'YYYY-MM-DD' format.
+            data_source (str): Data source identifier.
+            
+        Returns:
+            pd.DataFrame: Price data sorted in ascending date order.
+        """
+        query = text("""
+            SELECT date, open, high, low, close, volume 
+            FROM daily_prices
+            WHERE ticker = :ticker
+              AND data_source = :data_source
+              AND date BETWEEN :start_date AND :end_date
+            ORDER BY date ASC
+        """)
+        params = {
+            "ticker": ticker,
+            "data_source": data_source,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        return self._execute_query(query, params, index_col="date")
+    
+    def _calculate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate the Awesome Oscillator and generate crossover signals.
+        
+        Parameters:
+            data (pd.DataFrame): Historical price data.
+            
+        Returns:
+            pd.DataFrame: DataFrame with 'close', 'ao', 'signal', and 'signal_strength'.
+        """
+        # Ensure the data is sorted by ascending date.
+        data = data.sort_index()
+        
+        # Calculate the median price.
+        data["median_price"] = (data["high"] + data["low"]) / 2
+        
+        # Compute the short-term and long-term SMAs.
+        data["short_sma"] = data["median_price"].rolling(window=self.short_period, min_periods=self.short_period).mean()
+        data["long_sma"] = data["median_price"].rolling(window=self.long_period, min_periods=self.long_period).mean()
+        
+        # The Awesome Oscillator is the difference between the two SMAs.
+        data["ao"] = data["short_sma"] - data["long_sma"]
+        data.dropna(subset=["ao"], inplace=True)  # Remove periods with incomplete SMA calculation.
+        
+        # Initialize signal and signal_strength columns.
+        data["signal"] = 0
+        data["signal_strength"] = 0.0
+        
+        # Buy signal: AO crosses upward past 0.
+        buy_mask = (data["ao"] > 0) & (data["ao"].shift(1) <= 0)
+        data.loc[buy_mask, "signal"] = 1
+        data.loc[buy_mask, "signal_strength"] = data.loc[buy_mask, "ao"].abs()
+        
+        # Sell signal: AO crosses downward past 0.
+        sell_mask = (data["ao"] < 0) & (data["ao"].shift(1) >= 0)
+        data.loc[sell_mask, "signal"] = -1
+        data.loc[sell_mask, "signal_strength"] = data.loc[sell_mask, "ao"].abs()
+        
+        # Select only the necessary columns.
+        signals_df = data[["close", "ao", "signal", "signal_strength"]].copy()
+        self.logger.debug(f"Calculated AO signals (last 5 rows):\n{signals_df.tail()}")
+        return signals_df
+    
+    def _simulate_positions(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
+        """
+        Update the signals DataFrame to simulate positions based on signals.
+        
+        The logic is simple: when a non-zero signal occurs, the position is updated;
+        otherwise, the previous position is carried forward.
+        
+        Parameters:
+            signals (pd.DataFrame): DataFrame produced from _calculate_signals.
+            initial_position (int): The starting position for the backtest.
         
         Returns:
-            pd.DataFrame: DataFrame with trading signals, AO values, close prices, and signal strength.
+            pd.DataFrame: Signals DataFrame with an additional 'position' column.
         """
-        # Calculate the median price from high and low prices
-        hist_data['median_price'] = (hist_data['high'] + hist_data['low']) / 2
-        
-        # Compute short-term and long-term SMAs of the median price
-        short_sma = hist_data['median_price'].rolling(window=self.short_period).mean()
-        long_sma = hist_data['median_price'].rolling(window=self.long_period).mean()
-        
-        # Awesome Oscillator (AO) is the difference between these two SMAs
-        hist_data['ao'] = short_sma - long_sma
-        
-        # Drop rows where 'ao' is NaN (typically the first few rows before SMA windows are full)
-        hist_data.dropna(subset=['ao'], inplace=True)
-        
-        ao = hist_data['ao']
-        # Initialize a series to store the signals (1 for buy, -1 for sell, 0 for none)
-        ao_signal = pd.Series(0, index=hist_data.index)
-        # Initialize a series for the signal strength (absolute AO value at the moment of the crossover)
-        signal_strength = pd.Series(0.0, index=hist_data.index)
-
-        # Generate a buy signal when AO crosses above zero (from negative or zero)
-        buy_condition = (ao > 0) & (ao.shift(1) <= 0)
-        ao_signal[buy_condition] = 1
-        signal_strength[buy_condition] = ao[buy_condition].abs()
-
-        # Generate a sell signal when AO crosses below zero (from positive or zero)
-        sell_condition = (ao < 0) & (ao.shift(1) >= 0)
-        ao_signal[sell_condition] = -1
-        signal_strength[sell_condition] = ao[sell_condition].abs()
-
-        # Build the final DataFrame of signals with close prices, AO values, signals, and strength
-        signals_df = pd.DataFrame(index=hist_data.index)
-        signals_df['close'] = hist_data['close']
-        signals_df['ao'] = ao
-        signals_df['signal'] = ao_signal
-        signals_df['signal_strength'] = signal_strength
-
-        self.logger.debug(f"Generated AO signals:\n{signals_df.tail()}")
-        # Return the DataFrame excluding the initial rows that might contain incomplete SMA calculations
-        return signals_df.iloc[max(self.long_period, self.short_period) + 1:, :]
+        # Replace zeros with NaN, forward-fill and then fill the first entry with initial_position.
+        signals["position"] = signals["signal"].replace(0, np.nan).ffill().fillna(initial_position)
+        signals["position"] = signals["position"].astype(int)
+        return signals
