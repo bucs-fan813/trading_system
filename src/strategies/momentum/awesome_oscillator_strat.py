@@ -20,10 +20,6 @@ class AwesomeOscillatorStrategy(BaseStrategy):
                   - 'short_period' (default: 5)
                   - 'long_period' (default: 34)
 				  
-				  
-				  
-				  
-				  
 		The Awesome Oscillator (AO) is computed as:
 			AO = (short_sma - long_sma)
 		where the SMAs are computed over the median price:
