@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# src/strategies/momentum/awesome_oscillator_strat.py
+
 """
 Awesome Oscillator Strategy with Integrated Risk Management Component
 
