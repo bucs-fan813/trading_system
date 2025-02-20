@@ -48,7 +48,7 @@ class RiskManager:
         self.slippage_pct = slippage_pct
         self.transaction_cost_pct = transaction_cost_pct
 
-    def apply(self, data: pd.DataFrame, signals: pd.DataFrame, initial_position: int = 0) -> pd.DataFrame:
+    def apply(self, signals: pd.DataFrame, initial_position: int = 0) -> pd.DataFrame:
         """
         Apply vectorized risk management rules and compute trade returns.
 
@@ -61,7 +61,7 @@ class RiskManager:
 
         Args:
             data (pd.DataFrame): Price data including 'high', 'low', and 'close' prices.
-            signals (pd.DataFrame): Trading signals with at least 'signal' and 'close' columns.
+            signals (pd.DataFrame): Trading signals with at least 'signal', 'high', 'low' and 'close' columns.
             initial_position (int): The initial position (0 for none, 1 for long, -1 for short).
 
         Returns:
@@ -76,7 +76,7 @@ class RiskManager:
         """
         # Merge signals with relevant price data.
         df = signals.copy()
-        df = df[['signal', 'close']].join(data[['high', 'low']])
+        df = df[['signal', 'close', 'high', 'low']]
 
         # Determine the underlying trading position based on signals.
         # Non-zero signals trigger an entry and the position is forward-filled.
