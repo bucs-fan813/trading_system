@@ -7,212 +7,350 @@ from typing import Dict, Optional
 
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+from src.strategies.risk_management import RiskManager
 
 class CoppockCurveStrategy(BaseStrategy):
     """
-    Coppock Curve Strategy with enhanced data validation, signal alignment,
-    and production-grade parameter checking.
-
-    This strategy:
-      - Converts ROC parameters from months to trading days (assumes 21 trading days/month).
-      - Retrieves historical prices from the DB, ensuring chronological order and proper index conversion.
-      - Calculates two ROC values, sums them, and then smooths the series with a rolling weighted moving average (WMA).
-      - Generates buy/sell signals when the Coppock Curve crosses zero following confirmed periods of negativity or positivity.
-      - Computes momentum strength that can be normalized before output.
+    CoppockCurveStrategy implements the Coppock Curve trading strategy.
+    
+    Mathematical Explanation:
+    The Coppock Curve is calculated as a Weighted Moving Average (WMA) of the sum of two rate-of-change (ROC)
+    measurements:
+    
+    1. Calculate ROC values:
+       - ROC1 = 100 * ((Close / Close shifted by n1 days) - 1)
+       - ROC2 = 100 * ((Close / Close shifted by n2 days) - 1)
+       where n1 and n2 are derived from the number of months (converted to trading days, e.g. 14 and 11 months).
+       
+    2. Combine the two ROC values:
+       CombinedROC = ROC1 + ROC2
+       
+    3. Smooth the CombinedROC using a weighted moving average (WMA):
+       Coppock Curve = WMA(CombinedROC, lookback window = wma_lookback)
+       where weights increase linearly (1, 2, ..., wma_lookback).
+       
+    Signal Generation:
+    - A long signal (+1) is generated when the Coppock Curve crosses from below 0 to above 0 after a sustained negative regime.
+    - A short signal (-1) is generated when the Coppock Curve crosses from above 0 to below 0 after a sustained positive regime.
+    - A signal of 0 indicates no actionable change.
+    
+    Momentum Strength:
+    The strategy also computes a momentum strength metric by comparing the Coppock Curve with its short-term average,
+    and optionally normalizes the strength to a range [-1, 1]. This can be used downstream for position sizing or
+    further optimization.
+    
+    Risk Management:
+    The strategy integrates risk management using the RiskManager class to apply stop-loss, take-profit, slippage, and 
+    transaction cost adjustments. This ensures that entry and exit signals are adjusted according to risk parameters,
+    and the returns are computed accordingly for accurate backtesting.
+    
+    Backtesting and Signal Generation:
+    This implementation supports vectorized backtesting over a specified date range, and also provides quick latest
+    signal generation for end-of-day decision making.
+    
+    Attributes:
+        roc1_months (int): Lookback period in months for the first ROC calculation.
+        roc2_months (int): Lookback period in months for the second ROC calculation.
+        roc1_days (int): Converted trading days for first ROC (roc1_months * 21).
+        roc2_days (int): Converted trading days for second ROC (roc2_months * 21).
+        wma_lookback (int): Lookback period for weighted moving average smoothing.
+        stop_loss_pct (float): Stop loss percentage.
+        take_profit_pct (float): Take profit percentage.
+        slippage_pct (float): Slippage as a fraction of price.
+        transaction_cost_pct (float): Transaction cost as a fraction of price.
+        strength_window (int): Lookback window for normalizing momentum strength.
+        normalize_strength (bool): Flag to normalize momentum strength.
     """
-
+    
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
+        """
+        Initialize the Coppock Curve Strategy with database configuration and parameters.
+        
+        Args:
+            db_config (DatabaseConfig): Database configuration settings.
+            params (dict, optional): Dictionary of strategy parameters including:
+                - 'roc1_months': Months for first ROC (default: 14)
+                - 'roc2_months': Months for second ROC (default: 11)
+                - 'wma_lookback': Lookback window for weighting (default: 10)
+                - 'stop_loss_pct': Stop loss percentage (default: 0.05)
+                - 'take_profit_pct': Take profit percentage (default: 0.10)
+                - 'slippage_pct': Slippage percentage (default: 0.001)
+                - 'transaction_cost_pct': Transaction cost percentage (default: 0.001)
+                - 'strength_window': Lookback window for momentum strength normalization (default: 504)
+                - 'normalize_strength': Boolean flag to normalize strength (default: True)
+        """
         super().__init__(db_config, params)
         self._validate_params()
+        self._init_risk_params()
         self._init_strength_params()
 
     def _validate_params(self):
-        """Validate and convert strategy parameters to trading days."""
+        """
+        Validate strategy parameters and convert month-based inputs to trading days.
+
+        Ensures that the ROC windows (in days) are larger than the WMA window.
+        Logs a warning if the WMA window exceeds or equals the shorter ROC period.
+        """
         self.roc1_months = max(1, int(self.params.get('roc1_months', 14)))
         self.roc2_months = max(1, int(self.params.get('roc2_months', 11)))
-        self.roc1_days = self.roc1_months * 21
+        self.roc1_days = self.roc1_months * 21  # Approximate trading days per month.
         self.roc2_days = self.roc2_months * 21
-
-        # Ensure the WMA lookback window is at least 5 periods.
         self.wma_lookback = max(5, int(self.params.get('wma_lookback', 10)))
+
         if min(self.roc1_days, self.roc2_days) <= self.wma_lookback:
-            self.logger.warning("ROC periods should exceed the WMA window for meaningful signals.")
+            self.logger.warning("ROC periods should exceed WMA window for meaningful signals")
+
+    def _init_risk_params(self):
+        """
+        Initialize risk management parameters from strategy parameters.
+        """
+        self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
+        self.take_profit_pct = self.params.get('take_profit_pct', 0.10)
+        self.slippage_pct = self.params.get('slippage_pct', 0.001)
+        self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
 
     def _init_strength_params(self):
-        """Initialize parameters for momentum strength calculation."""
-        self.strength_window = int(self.params.get('strength_window', 504))  # Approximately 2 years of trading days
+        """
+        Initialize momentum strength parameters from strategy parameters.
+        """
+        self.strength_window = int(self.params.get('strength_window', 504))
         self.normalize_strength = self.params.get('normalize_strength', True)
 
-    def _get_validated_prices(self, ticker: str) -> pd.DataFrame:
+    def _get_validated_prices(self, ticker: str, start_date: str = None, 
+                              end_date: str = None, min_periods: int = 252) -> pd.DataFrame:
         """
-        Retrieve and validate price data ensuring sufficient lookback.
-        
+        Retrieve and validate historical OHLC price data for a given ticker.
+
+        Retrieves data from the database using the base class method, applies forward fill and drops missing values.
+
+        Args:
+            ticker (str): Stock ticker symbol.
+            start_date (str, optional): Start date for the data in 'YYYY-MM-DD' format.
+            end_date (str, optional): End date for the data in 'YYYY-MM-DD' format.
+            min_periods (int): Minimum number of records required for validity.
+
         Returns:
-            DataFrame with 'close' prices. Also attempts to convert the index
-            to a datetime type if not already done.
+            pd.DataFrame: Validated DataFrame with columns: ['close', 'high', 'low'].
+            If insufficient data is found, returns an empty DataFrame.
         """
-        min_periods = max(self.roc1_days, self.roc2_days) + self.wma_lookback + 21
-        prices = self.get_historical_prices(ticker, lookback=min_periods)
-
-        if not self._validate_data(prices, min_periods):
-            self.logger.warning(f"Not enough data for ticker {ticker}. Required: {min_periods}, got: {len(prices)}")
-            return pd.DataFrame()
-
-        # Optional: Ensure the index is datetime (avoids subtraction errors later)
-        if not np.issubdtype(prices.index.dtype, np.datetime64):
-            try:
-                prices.index = pd.to_datetime(prices.index)
-            except Exception as e:
-                self.logger.error(f"Failed to convert index to datetime for {ticker}: {e}")
+        try:
+            prices = self.get_historical_prices(
+                ticker=ticker,
+                from_date=start_date,
+                to_date=end_date,
+                lookback=min_periods if not (start_date or end_date) else None
+            )
+            if not self._validate_data(prices, min_periods):
                 return pd.DataFrame()
 
-        # The base class sorts the data, so here we simply forward-fill minor gaps.
-        return prices[['close']].ffill().dropna()
+            return prices[['close', 'high', 'low']].ffill().dropna()
+        except Exception as e:
+            self.logger.error(f"Price retrieval failed: {e}")
+            return pd.DataFrame()
 
     def _calculate_coppock_curve(self, close: pd.Series) -> pd.Series:
         """
-        Compute the Coppock Curve using two rate-of-change (ROC) measures and a WMA smoothing.
+        Calculate the Coppock Curve using vectorized operations.
 
-        Steps:
-          1. Compute ROC for two different periods (converted to days).
-          2. Sum these ROC series.
-          3. Smooth the combined ROC using a rolling weighted moving average (WMA)
-             with dynamic weights based on the available window length.
-        
+        The Coppock Curve is calculated by computing two rates of change (ROC) over different periods,
+        summing them, and then smoothing the result using a weighted moving average (WMA).
+
+        Mathematical details:
+            ROC1 = 100 * ((Close / Close_shifted_by_roc1_days) - 1)
+            ROC2 = 100 * ((Close / Close_shifted_by_roc2_days) - 1)
+            CombinedROC = ROC1 + ROC2
+            Coppock Curve = WMA(CombinedROC, window=self.wma_lookback) where weights = [1, 2, ..., wma_lookback]
+
+        Args:
+            close (pd.Series): Series of closing prices.
+
         Returns:
-            A Series representing the Coppock Curve.
+            pd.Series: Series representing the Coppock Curve.
         """
-        roc1 = close.pct_change(self.roc1_days).mul(100)
-        roc2 = close.pct_change(self.roc2_days).mul(100)
+        roc1 = close.pct_change(self.roc1_days, fill_method=None) * 100
+        roc2 = close.pct_change(self.roc2_days, fill_method=None) * 100
         combined_roc = (roc1 + roc2).dropna()
 
-        if len(combined_roc) < self.wma_lookback:
-            return pd.Series(dtype=float, index=close.index)
-
-        def rolling_wma(x):
-            weights = np.arange(1, len(x) + 1)
-            return np.dot(x, weights) / weights.sum()
-
+        weights = np.arange(1, self.wma_lookback + 1)
         wma = combined_roc.rolling(
             window=self.wma_lookback,
             min_periods=int(self.wma_lookback * 0.8)
-        ).apply(rolling_wma, raw=True)
+        ).apply(
+            lambda x: np.dot(x[-len(weights):], weights) / weights.sum(), 
+            raw=True
+        )
         return wma
 
-    def generate_signals(self, ticker: str) -> pd.DataFrame:
+    def _generate_raw_signals(self, prices: pd.DataFrame, cc: pd.Series) -> pd.DataFrame:
         """
-        Generate trading signals based on the Coppock Curve indicator.
+        Generate raw trading signals based on the Coppock Curve and momentum regime detection.
 
-        Process:
-          - Retrieve and validate historical close price data.
-          - Calculate the Coppock Curve.
-          - Generate raw signals by detecting a change in regime (from 
-            prolonged negative to positive and vice versa) using a shifted
-            rolling window check.
-          - Compute and optionally normalize momentum strength.
-        
+        Determines regime shifts by checking consecutive days of negative or positive Coppock Curve values 
+        from the previous day, and generates a long signal when a negative regime turns positive, and a 
+        short signal when a positive regime turns negative.
+
+        Additionally calculates a momentum strength metric based on the divergence of the current Coppock 
+        Curve value from its short-term moving average, with optional normalization.
+
+        Args:
+            prices (pd.DataFrame): DataFrame containing 'close', 'high', and 'low' prices.
+            cc (pd.Series): Series representing the Coppock Curve.
+
         Returns:
-            DataFrame with columns: ['close', 'cc', 'signal', 'position', 'strength'].
+            pd.DataFrame: DataFrame with columns:
+                - 'close': Closing price.
+                - 'high': High price.
+                - 'low': Low price.
+                - 'signal': Trading signal (1 for long, -1 for short, 0 for no action).
+                - 'strength': Calculated momentum strength indicator.
         """
-        try:
-            prices_df = self._get_validated_prices(ticker)
-            if prices_df.empty:
-                return pd.DataFrame()
-
-            cc = self._calculate_coppock_curve(prices_df['close'])
-            if cc.empty:
-                self.logger.warning(f"Coppock Curve computation returned empty for {ticker}.")
-                return pd.DataFrame()
-
-            signals_df = self._create_signals_with_strength(prices_df['close'], cc)
-            return self._postprocess_signals(signals_df)
-        except Exception as e:
-            self.logger.error(f"Signal generation failed for {ticker}: {e}", exc_info=True)
-            return pd.DataFrame()
-
-    def _create_signals_with_strength(self, close: pd.Series, cc: pd.Series) -> pd.DataFrame:
-        """
-        Generate the raw buy/sell signals along with momentum strength.
-
-        Key steps:
-          - Create a DataFrame combining 'close' and 'cc'.
-          - Generate boolean masks by checking if the Coppock Curve was
-            consistently negative or positive over a 4-day rolling window,
-            using a shift(1) to reference prior periods.
-          - Use np.select to produce a buy signal (1) if the previous period
-            was negative and today crosses above zero, or a sell signal (-1)
-            if the previous period was positive and today crosses below zero.
-          - Forward-fill positions based on the last recorded non-zero signal.
-          - Calculate a raw strength measure relative to a rolling 21-day mean.
-        """
-        df = pd.DataFrame({'close': close, 'cc': cc}).dropna()
+        df = prices.assign(cc=cc).dropna()
         if df.empty:
             return df
 
-        # Create rolling condition masks with proper shift to check the previous period.
-        was_negative = (
-            df['cc']
-            .shift(1)
-            .rolling(4, min_periods=4)
-            .apply(lambda x: np.all(x < 0), raw=True)
-            .fillna(0)
-            .astype(bool)
-        )
-        was_positive = (
-            df['cc']
-            .shift(1)
-            .rolling(4, min_periods=4)
-            .apply(lambda x: np.all(x > 0), raw=True)
-            .fillna(0)
-            .astype(bool)
-        )
+        # Detect regime: check if the previous Coppock Curve (shifted_cc) was consistently negative or positive for 4 days.
+        shifted_cc = df['cc'].shift(1)
+        df['was_negative'] = (shifted_cc < 0).rolling(4, min_periods=4).sum() == 4
+        df['was_positive'] = (shifted_cc > 0).rolling(4, min_periods=4).sum() == 4
 
+        # Generate signals: long when curve shifts from negative to positive, short when it shifts from positive to negative.
         df['signal'] = np.select(
-            [was_negative & (df['cc'] > 0), was_positive & (df['cc'] < 0)],
+            [df['was_negative'] & (df['cc'] > 0),
+             df['was_positive'] & (df['cc'] < 0)],
             [1, -1],
             default=0
         )
-        df['position'] = df['signal'].replace(0, np.nan).ffill().fillna(0).astype(int)
-
-        # Calculate momentum strength relative to a 21-day rolling mean reference.
-        df['strength_raw'] = self._calculate_strength(df['cc'], was_negative, was_positive)
-        return df
-
-    def _calculate_strength(self, cc: pd.Series, neg_mask: pd.Series, pos_mask: pd.Series) -> pd.Series:
-        """
-        Calculate momentum strength relative to a shifted 21-day rolling mean.
-
-        For both negative and positive regimes the reference is given by the same rolling average.
-        The strength is computed as the relative deviation of the Coppock Curve from this reference.
-        """
-        strength = pd.Series(0.0, index=cc.index)
-        ref = cc.rolling(21, min_periods=1).mean().shift()
-        strength[neg_mask] = (cc - ref) / ref.abs()
-        strength[pos_mask] = (cc - ref) / ref.abs()
-        return strength.replace([np.inf, -np.inf], 0.0)
-
-    def _postprocess_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Finalize signal data by normalizing momentum strength if required and selecting columns.
-        """
+        
+        # Calculate raw momentum strength based on divergence from a 21-day moving average.
+        ref = df['cc'].rolling(21, min_periods=1).mean().shift()
+        df['strength_raw'] = (df['cc'] - ref) / ref.abs().replace(0, 1)
+        
+        # Normalize momentum strength to range [-1, 1] if required.
         if self.normalize_strength:
-            df['strength'] = self._normalize_to_range(df['strength_raw'], self.strength_window)
+            rolling_min = df['strength_raw'].rolling(self.strength_window, min_periods=1).min()
+            rolling_max = df['strength_raw'].rolling(self.strength_window, min_periods=1).max()
+            df['strength'] = 2 * ((df['strength_raw'] - rolling_min) / (rolling_max - rolling_min).replace(0, 1)) - 1
         else:
             df['strength'] = df['strength_raw']
-        return df[['close', 'cc', 'signal', 'position', 'strength']]
+            
+        return df[['close', 'high', 'low', 'signal', 'strength']]
 
-    def _normalize_to_range(self, series: pd.Series, window: int) -> pd.Series:
+    def _apply_risk_management(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
         """
-        Normalize a series to the range [-1, 1] using a rolling window.
+        Apply risk management rules to trading signals using the RiskManager.
 
-        This normalization computes the rolling minimum and maximum,
-        then rescales the values accordingly.
+        Adjusts for stop-loss, take-profit, slippage, and transaction costs to calculate entry and exit prices,
+        realized returns, and cumulative performance. Integrates with a vectorized risk manager strategy.
+
+        Args:
+            signals (pd.DataFrame): DataFrame containing trading signals and OHLC data with columns:
+                - 'signal'
+                - 'close'
+                - 'high'
+                - 'low'
+            initial_position (int): The starting trading position (0 for flat, 1 for long, -1 for short).
+
+        Returns:
+            pd.DataFrame: Updated DataFrame containing risk-managed columns:
+                - 'close', 'high', 'low', 'signal', 'position', 'return', 
+                  'cumulative_return', 'exit_type'
+            Also includes the 'strength' column after joining.
         """
-        rolling_min = series.rolling(window, min_periods=1).min()
-        rolling_max = series.rolling(window, min_periods=1).max()
-        denom = (rolling_max - rolling_min).replace(0, 1)
-        return 2 * ((series - rolling_min) / denom) - 1
+        risk_manager = RiskManager(
+            stop_loss_pct=self.stop_loss_pct,
+            take_profit_pct=self.take_profit_pct,
+            slippage_pct=self.slippage_pct,
+            transaction_cost_pct=self.transaction_cost_pct
+        )
+        try:
+            managed = risk_manager.apply(
+                signals[['signal', 'close', 'high', 'low']].copy(),
+                initial_position=initial_position
+            )
+            # Join the calculated momentum strength from the raw signals.
+            return managed.join(signals[['strength']], how='left')
+        except Exception as e:
+            self.logger.error(f"Risk management failed: {e}")
+            return pd.DataFrame()
+
+    def _process_latest_signal(self, signals: pd.DataFrame) -> pd.DataFrame:
+        """
+        Retrieve the latest available signal for end-of-day decision making.
+
+        This method extracts the most recent row from the signals DataFrame, ensuring minimal data access and 
+        stable signal calculation.
+
+        Args:
+            signals (pd.DataFrame): DataFrame containing trading signals and associated metrics.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing only the most recent signal.
+        """
+        return signals.iloc[[-1]].dropna()
+
+    def generate_signals(self, ticker: str, start_date: str = None,
+                         end_date: str = None, initial_position: int = 0,
+                         latest_only: bool = False) -> pd.DataFrame:
+        """
+        Generate trading signals applying Coppock Curve logic and risk management, 
+        supporting both backtesting and latest signal evaluation.
+
+        Retrieves historical prices, calculates the Coppock Curve indicator, derives raw signals based on 
+        regime shifts and momentum strength, and then applies risk management adjustments including 
+        stop-loss and take-profit rules with slippage and transaction cost.
+        
+        Args:
+            ticker (str): Stock ticker symbol.
+            start_date (str, optional): Start date for backtesting in 'YYYY-MM-DD' format.
+            end_date (str, optional): End date for backtesting in 'YYYY-MM-DD' format.
+            initial_position (int): The starting position (0: flat, 1: long, -1: short).
+            latest_only (bool, optional): If True, returns only the latest signal for immediate trading decision.
+
+        Returns:
+            pd.DataFrame: DataFrame containing:
+                - 'close', 'high', 'low': OHLC price data.
+                - 'signal': Raw trading signal.
+                - 'position': Risk-managed position.
+                - 'return': Realized return on exit events.
+                - 'cumulative_return': Cumulative trade return.
+                - 'exit_type': Type of exit event (e.g., 'stop_loss', 'take_profit', 'signal_exit', 'none').
+                - 'strength': Momentum strength indicator.
+            In backtesting mode, the full time series is returned. In latest mode, only the most recent row is returned.
+        """
+        min_periods = max(self.roc1_days, self.roc2_days) + self.wma_lookback + 21
+        
+        try:
+            prices = self._get_validated_prices(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                min_periods=min_periods
+            )
+            if prices.empty:
+                return pd.DataFrame()
+
+            # Compute the Coppock Curve indicator.
+            cc = self._calculate_coppock_curve(prices['close'])
+            # Generate raw signals based on the Coppock Curve.
+            signals = self._generate_raw_signals(prices, cc)
+            
+            # If latest_only flag is set, return only the most recent signal.
+            if latest_only:
+                return self._process_latest_signal(signals)
+            
+            # Apply risk management rules and return the enriched signals DataFrame.
+            return self._apply_risk_management(signals, initial_position)
+        except Exception as e:
+            self.logger.error(f"Signal generation failed: {e}", exc_info=True)
+            return pd.DataFrame()
 
     def __repr__(self):
-        return (f"CoppockCurveStrategy(roc1={self.roc1_months}mo, "
-                f"roc2={self.roc2_months}mo, wma={self.wma_lookback})")
+        """
+        Return a string representation of the strategy instance with key parameters.
+
+        Returns:
+            str: Representation of the strategy configuration.
+        """
+        return (f"CoppockCurveStrategy(ROC={self.roc1_months}/{self.roc2_months}mo, "
+                f"WMA={self.wma_lookback}, SL={self.stop_loss_pct*100:.1f}%, "
+                f"TP={self.take_profit_pct*100:.1f}%)")
