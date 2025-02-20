@@ -122,12 +122,8 @@ class AwesomeOscillatorStrategy(BaseStrategy):
 
             # 1. Generate signals.
             signals = self._calculate_signals(data)
-            # 2. Simulate positions.
-            signals = self._simulate_positions(signals, initial_position)
-            # 3. Calculate profit metrics.
-            signals = self._calculate_profits(signals, initial_position)
-            # 4. Delegate risk management to the external component.
-            signals = self.risk_manager.apply(data, signals, initial_position)
+            # 2. Calculate profit metrics and delegate risk management to the external component.
+            signals = self.risk_manager.apply(signals, initial_position)
 
             if latest_only:
                 signals = signals.iloc[[-1]].copy()
@@ -173,38 +169,5 @@ class AwesomeOscillatorStrategy(BaseStrategy):
         df['signal_strength'] = 0.0
         df.loc[buy_mask, 'signal_strength'] = df.loc[buy_mask, 'normalized_strength']
         df.loc[sell_mask, 'signal_strength'] = df.loc[sell_mask, 'normalized_strength']
-        signals = df[['close', 'high', 'low', 'ao', 'signal', 'signal_strength']].copy()
-        return signals
-
-    def _simulate_positions(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
-        """
-        Simulate positions from the trading signals in a fully vectorized fashion.
-
-        The method replaces non-zero signals with definitive positions (1 for buy, 0 for sell),
-        then forward-fills these positions, starting with the given initial position.
-
-        Returns:
-            pd.DataFrame: DataFrame with an additional 'position' column.															 
-        """
-        signals['position'] = signals['signal'].replace(0, np.nan).ffill().fillna(initial_position)
-        signals['position'] = signals['position'].astype(int)
-        return signals
-
-    def _calculate_profits(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
-        """
-		Compute performance metrics based on trading signals and positions.
-
-        The calculations are as follows:
-          - daily_return: Percentage change in the 'close' price.
-          - strategy_return: daily_return multiplied by the lagged (previous day's) position.
-          - cumulative_return: Product of (1 + strategy_return) across time, minus 1.
-
-        Returns:
-            pd.DataFrame: DataFrame augmented with 'daily_return', 'strategy_return', and 'cumulative_return'.
-        """
-        signals['daily_return'] = signals['close'].pct_change().fillna(0)
-        signals['lagged_position'] = signals['position'].shift(1).fillna(initial_position)
-        signals['strategy_return'] = signals['daily_return'] * signals['lagged_position']
-        signals['cumulative_return'] = (1 + signals['strategy_return']).cumprod() - 1
-        signals.drop(columns=['lagged_position'], inplace=True)
+        signals = df[['open', 'close', 'high', 'low', 'ao', 'signal', 'signal_strength']].copy()
         return signals
