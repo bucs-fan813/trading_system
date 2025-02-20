@@ -1,3 +1,5 @@
+# trading_system/src/strategies/risk_management.py
+
 """
 Risk Management Component
 
