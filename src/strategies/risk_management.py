@@ -52,15 +52,13 @@ class RiskManager:
         """
         Apply vectorized risk management rules and compute trade returns.
 
-        This function processes daily price data (requiring columns: 'high', 'low', 'close')
-        along with a signals DataFrame (with at least 'signal' and 'close' columns). It determines
-        the entry price (adjusted for slippage and transaction costs) on a change in position,
+        This function processes signals DataFrame (with at least 'signal', 'high', 'low' and 'close' columns).
+        It determines the entry price (adjusted for slippage and transaction costs) on a change in position,
         computes stop-loss and take-profit thresholds for long and short trades, identifies exit events,
         calculates the realized return when an exit is triggered, and derives the cumulative product of
         the trade multipliers. Finally, it updates the position to 0 on exit events.
 
         Args:
-            data (pd.DataFrame): Price data including 'high', 'low', and 'close' prices.
             signals (pd.DataFrame): Trading signals with at least 'signal', 'high', 'low' and 'close' columns.
             initial_position (int): The initial position (0 for none, 1 for long, -1 for short).
 
