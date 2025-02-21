@@ -26,7 +26,7 @@ class CoppockCurveStrategy(BaseStrategy):
        CombinedROC = ROC1 + ROC2
        
     3. Smooth the CombinedROC using a weighted moving average (WMA):
-       Coppock Curve = WMA(CombinedROC, lookback window = wma_lookback)
+       Coppock Curve = WMA(CombinedROC, window=self.wma_lookback) 
        where weights increase linearly (1, 2, ..., wma_lookback).
        
     Signal Generation:
@@ -35,9 +35,9 @@ class CoppockCurveStrategy(BaseStrategy):
     - A signal of 0 indicates no actionable change.
     
     Momentum Strength:
-    The strategy also computes a momentum strength metric by comparing the Coppock Curve with its short-term average,
-    and optionally normalizes the strength to a range [-1, 1]. This can be used downstream for position sizing or
-    further optimization.
+    The strategy also computes a momentum strength metric by comparing the Coppock Curve with its short‐term average,
+    and optionally normalizes the strength to a range [-1, 1]. This additional indicator can be used downstream for
+    position sizing or further optimization.
     
     Risk Management:
     The strategy integrates risk management using the RiskManager class to apply stop-loss, take-profit, slippage, and 
@@ -159,7 +159,7 @@ class CoppockCurveStrategy(BaseStrategy):
             ROC1 = 100 * ((Close / Close_shifted_by_roc1_days) - 1)
             ROC2 = 100 * ((Close / Close_shifted_by_roc2_days) - 1)
             CombinedROC = ROC1 + ROC2
-            Coppock Curve = WMA(CombinedROC, window=self.wma_lookback) where weights = [1, 2, ..., wma_lookback]
+            Coppock Curve = WMA(CombinedROC, window=self.wma_lookback) where weights are linearly increasing.
 
         Args:
             close (pd.Series): Series of closing prices.
@@ -171,12 +171,13 @@ class CoppockCurveStrategy(BaseStrategy):
         roc2 = close.pct_change(self.roc2_days, fill_method=None) * 100
         combined_roc = (roc1 + roc2).dropna()
 
+        # Precompute weights for the weighted moving average.
         weights = np.arange(1, self.wma_lookback + 1)
         wma = combined_roc.rolling(
             window=self.wma_lookback,
             min_periods=int(self.wma_lookback * 0.8)
         ).apply(
-            lambda x: np.dot(x[-len(weights):], weights) / weights.sum(), 
+            lambda x: np.dot(x, weights[-len(x):]) / weights[-len(x):].sum(),
             raw=True
         )
         return wma
