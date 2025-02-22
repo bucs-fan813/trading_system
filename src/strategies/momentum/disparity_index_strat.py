@@ -55,6 +55,7 @@ class DisparityIndexStrategy(BaseStrategy):
                 - take_profit_pct (float): Take profit percentage (default 0.10).
                 - slippage_pct (float): Estimated slippage percentage (default 0.001).
                 - transaction_cost_pct (float): Transaction cost percentage (default 0.001).
+                - 'long_only': Flag to allow only long positions (default: True)
         """
         params = params or {}
         super().__init__(db_config, params)
@@ -68,6 +69,7 @@ class DisparityIndexStrategy(BaseStrategy):
         self.take_profit_pct = params.get('take_profit_pct', 0.10)
         self.slippage_pct = params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = params.get('transaction_cost_pct', 0.001)
+        self.long_only = self.params.get('long_only', True)
         
         # Initialize the risk manager instance with the provided risk parameters.
         self.risk_manager = RiskManager(
@@ -183,6 +185,10 @@ class DisparityIndexStrategy(BaseStrategy):
         signal_strength = np.where(signals == 1, di, 
                                   np.where(signals == -1, -di, 0.0))
         
+        if self.long_only:
+            # Replace sell signals (-1) with 0 (exit)
+            signals[signals == -1] = 0
+        
         return di, pd.Series(signals, index=di.index), pd.Series(signal_strength, index=di.index)
 
     def _create_signals_df(self, prices_df: pd.DataFrame,
@@ -232,11 +238,9 @@ class DisparityIndexStrategy(BaseStrategy):
         """
         # Apply risk management to compute trade management metrics.
         managed_df = self.risk_manager.apply(
-            signals_df[['signal', 'close', 'high', 'low']],
+            signals_df,
             initial_position=initial_position
         )
-        # Merge back with additional strategy indicators.
-        result_df = managed_df.join(signals_df[['di', 'signal_strength', 'open']])
         
         # For forecasting, return only the latest record; otherwise, return the full backtest DataFrame.
-        return result_df.tail(1) if latest_only else result_df
+        return managed_df.tail(1) if latest_only else managed_df
