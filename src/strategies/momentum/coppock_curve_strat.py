@@ -78,11 +78,34 @@ class CoppockCurveStrategy(BaseStrategy):
                 - 'transaction_cost_pct': Transaction cost percentage (default: 0.001)
                 - 'strength_window': Lookback window for momentum strength normalization (default: 504)
                 - 'normalize_strength': Boolean flag to normalize strength (default: True)
+                - 'method': Method for signal generation ('zero_crossing' or 'directional') (default: 'zero_crossing')
+                - 'long_only': Flag to allow only long positions (default: True)   
         """
         super().__init__(db_config, params)
         self._validate_params()
         self._init_risk_params()
         self._init_strength_params()
+
+    def generate_repeated_array(input_number):
+        """
+        Generates a numpy array where the input number is repeated 21 times,
+        the previous number is repeated 21 times, and so on, until 1 is repeated 21 times.
+
+        Args:
+            input_number (int): The starting number for the array generation.
+
+        Returns:
+            numpy.ndarray: A 1D numpy array with the described repeated sequence.
+        """
+
+        if not isinstance(input_number, int) or input_number <= 0:
+            raise ValueError("Input must be a positive integer.")
+
+        repetitions = 21
+        number_sequence = np.arange(input_number, 0, -1) # Efficiently create a sequence from input_number down to 1
+        repeated_array = np.repeat(number_sequence, repetitions) # Efficiently repeat each number in the sequence
+
+        return repeated_array
 
     def _validate_params(self):
         """
@@ -95,7 +118,9 @@ class CoppockCurveStrategy(BaseStrategy):
         self.roc2_months = max(1, int(self.params.get('roc2_months', 11)))
         self.roc1_days = self.roc1_months * 21  # Approximate trading days per month.
         self.roc2_days = self.roc2_months * 21
-        self.wma_lookback = max(5, int(self.params.get('wma_lookback', 10)))
+        self.wma_lookback = max(5, int(self.params.get('wma_lookback', 10))) * 21
+        self.method = self.params.get('method', 'zero_crossing')
+        self.long_only = self.params.get('long_only', True)
 
         if min(self.roc1_days, self.roc2_days) <= self.wma_lookback:
             self.logger.warning("ROC periods should exceed WMA window for meaningful signals")
@@ -172,7 +197,7 @@ class CoppockCurveStrategy(BaseStrategy):
         combined_roc = (roc1 + roc2).dropna()
 
         # Precompute weights for the weighted moving average.
-        weights = np.arange(1, self.wma_lookback + 1)
+        weights = self.generate_repeated_array(self.wma_lookback/21)
         wma = combined_roc.rolling(
             window=self.wma_lookback,
             min_periods=int(self.wma_lookback * 0.8)
@@ -233,6 +258,9 @@ class CoppockCurveStrategy(BaseStrategy):
             df['strength'] = 2 * ((df['strength_raw'] - rolling_min) / (rolling_max - rolling_min).replace(0, 1)) - 1
         else:
             df['strength'] = df['strength_raw']
+
+        if self.long_only:
+                df['signal'] = df['signal'].clip(lower=0)
             
         return df[['close', 'high', 'low', 'signal', 'strength']]
 
@@ -332,8 +360,12 @@ class CoppockCurveStrategy(BaseStrategy):
 
             # Compute the Coppock Curve indicator.
             cc = self._calculate_coppock_curve(prices['close'])
-            # Generate raw signals based on the Coppock Curve.
-            signals = self._generate_raw_signals(prices, cc)
+
+            if self.method == 'zero_crossing':
+                # Generate raw signals based on the Coppock Curve.
+                signals = self._generate_raw_signals(prices, cc)
+            else:
+                signals = self._generate_raw_direction_signals(prices, cc)
             
             # If latest_only flag is set, return only the most recent signal.
             if latest_only:
@@ -355,3 +387,78 @@ class CoppockCurveStrategy(BaseStrategy):
         return (f"CoppockCurveStrategy(ROC={self.roc1_months}/{self.roc2_months}mo, "
                 f"WMA={self.wma_lookback}, SL={self.stop_loss_pct*100:.1f}%, "
                 f"TP={self.take_profit_pct*100:.1f}%)")
+    
+    def _generate_raw_direction_signals(self, prices: pd.DataFrame, cc: pd.Series) -> pd.DataFrame:
+        """
+        Generates signals based on sustained directional changes in the Coppock Curve.
+        A trend change is confirmed only when the new direction is sustained for 'sustain_days'.
+
+        This method calculates daily changes in the Coppock Curve, checks for sustained moves,
+        compares them with the previous trend (using a lookback window), and generates buy (1)
+        or sell (-1) signals accordingly.
+        """
+        df = prices.assign(cc=cc).dropna()
+        if df.empty:
+            return df
+
+        # Parameters with defaults
+        sustain_days = self.params.get('sustain_days', 4)
+        trend_strength = self.params.get('trend_strength_threshold', 0.75)  # threshold for clearly defined trend
+
+        # Calculate the daily directional change of the Coppock Curve (-1, 0, or 1)
+        df['direction'] = np.sign(df['cc'].diff())
+
+        # Identify sustained upward and downward moves.
+        # Instead of using rolling.apply with np.all, we use rolling min/max functions.
+        df['sustained_up'] = (
+            df['direction']
+            .rolling(window=sustain_days, min_periods=sustain_days)
+            .min() > 0
+        )
+        df['sustained_down'] = (
+            df['direction']
+            .rolling(window=sustain_days, min_periods=sustain_days)
+            .max() < 0
+        )
+
+        # Compute the previous trend using a lookback window.
+        # We first shift the current direction by 'sustain_days' to look at the trend before the sustained period.
+        lookback = max(sustain_days * 2, 10)  # ensure a sufficient number of observations
+        df['prev_direction'] = df['direction'].shift(sustain_days)
+        df['prev_trend'] = (
+            df['prev_direction']
+            .rolling(window=lookback, min_periods=lookback)
+            .apply(
+                lambda x: 1 if np.nanmean(x) > trend_strength else -1 if np.nanmean(x) < -trend_strength else 0,
+                raw=True
+            )
+        )
+
+        # Generate signals when a reversal is confirmed:
+        # - A buy (1) signal if the new sustained trend is upward and the previous trend was downward.
+        # - A sell (-1) signal if the new sustained trend is downward and the previous trend was upward.
+        df['signal'] = np.select(
+            [
+                df['sustained_up'] & (df['prev_trend'] < 0) & (df['direction'] > 0),
+                df['sustained_down'] & (df['prev_trend'] > 0) & (df['direction'] < 0)
+            ],
+            [1, -1],
+            default=0
+        )
+
+        # Calculate raw momentum strength based on divergence from a reference 21-day moving average.
+        ref = df['cc'].rolling(21, min_periods=1).mean().shift()
+        df['strength_raw'] = (df['cc'] - ref) / ref.abs().replace(0, 1)
+
+        # Optionally normalize the momentum strength to the range [-1, 1].
+        if self.normalize_strength:
+            rolling_min = df['strength_raw'].rolling(self.strength_window, min_periods=1).min()
+            rolling_max = df['strength_raw'].rolling(self.strength_window, min_periods=1).max()
+            df['strength'] = 2 * ((df['strength_raw'] - rolling_min) / (rolling_max - rolling_min).replace(0, 1)) - 1
+        else:
+            df['strength'] = df['strength_raw']
+
+        if self.long_only:
+                df['signal'] = df['signal'].clip(lower=0)
+
+        return df[['close', 'high', 'low', 'signal', 'strength']]
