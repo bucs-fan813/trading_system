@@ -42,6 +42,7 @@ class CCIStrategy(BaseStrategy):
                 - take_profit_pct (float): Percentage rise from entry price to trigger a take profit.
                 - slippage_pct (float): Estimated market slippage as a percentage of price.
                 - transaction_cost_pct (float): Estimated transaction cost as a percentage of price.
+                - long_only (default: True): If True, only long positions are allowed.
                 
         Raises:
             ValueError: If provided parameters do not conform to the expected ranges.
@@ -55,7 +56,8 @@ class CCIStrategy(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         
         # Combine user-supplied parameters with defaults.
@@ -124,6 +126,10 @@ class CCIStrategy(BaseStrategy):
                 - exit_type: Reason for trade exit (stop_loss, take_profit, signal_exit, or none).
         """
         try:
+
+            if self.params['long_only'] and initial_position not in {0,1}:
+                raise ValueError("Long-only strategy requires initial_position ∈ {0,1}")
+
             hist_data = self._get_data(ticker, start_date, end_date, latest_only)
             if not self._validate_data(hist_data):
                 return pd.DataFrame()
@@ -135,7 +141,7 @@ class CCIStrategy(BaseStrategy):
             risk_managed = self.risk_manager.apply(signals, initial_position)
             
             # Merge CCI and signal strength with risk-managed performance metrics.
-            return self._format_output(signals, risk_managed, latest_only)
+            return risk_managed[-1:] if latest_only else risk_managed
 
         except Exception as e:
             self.logger.error(f"Signal generation failed: {e}")
@@ -188,7 +194,7 @@ class CCIStrategy(BaseStrategy):
         Returns:
             bool: True if there are enough records; False otherwise.
         """
-        min_records = 2 * self.params['cci_period']
+        min_records = self.params['cci_period'] + 1
         if len(data) < min_records:
             self.logger.warning(f"Insufficient data: {len(data)} records, required {min_records}")
             return False
@@ -233,11 +239,11 @@ class CCIStrategy(BaseStrategy):
         
         # Compute the Mean Absolute Deviation (MAD) of TP.
         mad = tp.rolling(window=self.params['cci_period']).apply(
-            lambda x: np.abs(x - x.mean()).mean(), raw=True
+            lambda x: np.abs(x - x.mean()).mean(), # raw=True ### enable raw=True if speed is of concern 
         )
         
         # Calculate the CCI with the scaling constant 0.015.
-        cci = (tp - sma) / (0.015 * mad.replace(0, np.nan))
+        cci = (tp - sma) / (0.015 * mad.replace(0, 1e-6))
         
         # Store the computed indicator and prepare to generate signals.
         signals = pd.DataFrame({
@@ -254,6 +260,10 @@ class CCIStrategy(BaseStrategy):
         sell = (prev_cci > self.params['cci_upper_band']) & (signals['cci'] < self.params['cci_upper_band'])
         
         signals['signal'] = np.select([buy, sell], [1, -1], default=0)
+
+        if self.params['long_only']:
+            # Replace sell signals (-1) with 0 (exit)
+            signals.loc[sell, 'signal'] = 0
         
         # Compute signal strength based on the threshold crossed.
         signals['signal_strength'] = signals['cci'] - np.where(
@@ -262,29 +272,3 @@ class CCIStrategy(BaseStrategy):
         )
         
         return signals
-
-    def _format_output(self, signals: pd.DataFrame, risk_managed: pd.DataFrame, latest_only: bool) -> pd.DataFrame:
-        """
-        Merge raw signal data with risk-managed performance metrics and output the final result.
-        
-        The final DataFrame includes:
-            - Price data from the risk-managed DataFrame.
-            - Indicator data ('cci' and 'signal_strength') from the raw signals.
-            - Trading signals, positions, realized returns, cumulative return, and exit types.
-        
-        Args:
-            signals (pd.DataFrame): DataFrame containing the raw indicators and signals.
-            risk_managed (pd.DataFrame): DataFrame output from the RiskManager with adjusted positions
-                                         and performance metrics.
-            latest_only (bool): If True, only the last (most recent) row is returned.
-        
-        Returns:
-            pd.DataFrame: Final merged DataFrame with the columns:
-                        [close, high, low, cci, signal, signal_strength, position, return,
-                        cumulative_return, exit_type]
-        """
-        merged = risk_managed.join(signals[['cci', 'signal_strength']])
-        cols = ['close', 'high', 'low', 'cci', 'signal', 'signal_strength',
-                'position', 'return', 'cumulative_return', 'exit_type']
-        
-        return merged[cols].iloc[-1:] if latest_only else merged[cols]
