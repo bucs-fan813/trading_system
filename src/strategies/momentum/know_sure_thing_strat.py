@@ -38,6 +38,7 @@ class KSTStrategy(BaseStrategy):
         kst_weights : List of numeric weights to apply to each smoothed ROC component.
         risk_params : Dictionary containing risk management parameters (stop_loss_pct, take_profit_pct,
                       slippage_pct, transaction_cost_pct).
+        long_only : Boolean flag to restrict trading to long positions only.
 
     The strategy computes the KST indicator, its signal line, and then generates a position:
       - +1 for a bullish crossover
@@ -59,6 +60,7 @@ class KSTStrategy(BaseStrategy):
             'sma_periods': [10, 10, 10, 15],
             'signal_period': 9,
             'kst_weights': [1, 2, 3, 4],
+            'long_only': True,
             'risk_params': {
                 'stop_loss_pct': 0.05,
                 'take_profit_pct': 0.10,
@@ -149,9 +151,8 @@ class KSTStrategy(BaseStrategy):
 
             # Apply risk management and compute trade returns.
             risk_managed = self.risk_manager.apply(signals, initial_position)
-            results = self._format_output(signals, risk_managed)
 
-            return results.iloc[[-1]] if latest_only else results
+            return risk_managed.iloc[[-1]] if latest_only else risk_managed
 
         except Exception as e:
             self.logger.error(f"Error processing {ticker}: {str(e)}")
@@ -182,41 +183,12 @@ class KSTStrategy(BaseStrategy):
         cross_below = (kst < signal_line) & (kst.shift(1) >= signal_line.shift(1))
         
         signals.loc[cross_above, 'position'] = 1
-        signals.loc[cross_below, 'position'] = -1
+
+        if self.long_only:
+            signals.loc[cross_below, 'position'] = 0
+        else:
+            signals.loc[cross_below, 'position'] = -1
         
         # Generate a continuous trading signal by forward-filling the nonzero signals.
         signals['signal'] = signals['position'].replace(0, np.nan).ffill().fillna(0)
         return signals
-
-    def _format_output(self, signals: pd.DataFrame, risk_managed: pd.DataFrame) -> pd.DataFrame:
-        """
-        Combine the raw signals with risk-managed fields for the final backtest output.
-        
-        Args:
-            signals (pd.DataFrame): DataFrame containing raw KST signals and indicator information.
-            risk_managed (pd.DataFrame): DataFrame returned from the risk management process.
-            
-        Returns:
-            pd.DataFrame: Combined DataFrame with all relevant columns for further metric calculation.
-        """
-        output = pd.concat([
-            risk_managed,
-            signals[['kst', 'signal_line', 'signal_strength']]
-        ], axis=1)
-        return output
-
-    def _calculate_metrics(self, results: pd.DataFrame) -> pd.DataFrame:
-        """
-        Compute additional performance metrics such as cumulative return and drawdown.
-        
-        This method can be extended to calculate other metrics (e.g., Sharpe ratio).
-
-        Args:
-            results (pd.DataFrame): DataFrame with trade returns.
-            
-        Returns:
-            pd.DataFrame: DataFrame with additional performance columns.
-        """
-        results['cumulative_return'] = (1 + results['return']).cumprod() - 1
-        results['drawdown'] = results['cumulative_return'] - results['cumulative_return'].cummax()
-        return results
