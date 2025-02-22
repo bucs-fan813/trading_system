@@ -76,7 +76,6 @@ class RiskManager:
         """
         # Merge signals with relevant price data.
         df = signals.copy()
-        df = df[['signal', 'close', 'high', 'low']]
 
         # Determine the underlying trading position based on signals.
         # Non-zero signals trigger an entry and the position is forward-filled.
@@ -182,7 +181,9 @@ class RiskManager:
         )
         df['cumulative_return'] = (df['trade_multiplier']).cumprod() - 1
 
+        result = df.drop(columns=['raw_position', 'entry_price' ,'stop_level',
+                                   'target_level', 'trade_multiplier', 'exit_price'])
+
         # Return the DataFrame with selected columns.
-        result = df[['close', 'high', 'low', 'signal', 'position',
-                     'return', 'cumulative_return', 'exit_type']].dropna()
+        result = result.dropna()
         return result

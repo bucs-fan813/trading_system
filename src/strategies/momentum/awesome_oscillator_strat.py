@@ -31,6 +31,7 @@ class AwesomeOscillatorStrategy(BaseStrategy):
                 Expected keys:
                   - 'short_period' (default: 5)
                   - 'long_period' (default: 34)
+                  - 'long_only' (default: True)
 				  - Risk management related parameters:
 						'stop_loss_pct' (default: 0.05)
 						'take_profit_pct' (default: 0.10)
@@ -45,7 +46,7 @@ class AwesomeOscillatorStrategy(BaseStrategy):
 		  - A buy signal (signal = 1) is generated when AO crosses upward through zero.
 		  - A sell signal (signal = -1) is generated when AO crosses downward through zero.									  
         """
-        default_params = {'short_period': 5, 'long_period': 34}
+        default_params = {'short_period': 5, 'long_period': 34, 'long_only': True}
         params = params or default_params
         super().__init__(db_config, params)
         self.short_period = int(params.get('short_period', default_params['short_period']))
@@ -107,7 +108,8 @@ class AwesomeOscillatorStrategy(BaseStrategy):
         try:
             # Retrieve historical data.
             if start_date and end_date:
-                data = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
+                lookback_buffer = 2 * max(self.short_period, self.long_period)
+                data = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date, lookback=lookback_buffer)
             else:
                 # In forecast mode or absent defined dates, use a minimal lookback buffer.
                 lookback_buffer = 2 * max(self.short_period, self.long_period)
@@ -166,6 +168,10 @@ class AwesomeOscillatorStrategy(BaseStrategy):
         df['signal'] = 0
         df.loc[buy_mask, 'signal'] = 1
         df.loc[sell_mask, 'signal'] = -1
+        # Override sell signals if long_only is True
+        if self.long_only:
+            # Replace sell signals (-1) with 0 (exit)
+            df.loc[sell_mask, 'signal'] = 0
         df['signal_strength'] = 0.0
         df.loc[buy_mask, 'signal_strength'] = df.loc[buy_mask, 'normalized_strength']
         df.loc[sell_mask, 'signal_strength'] = df.loc[sell_mask, 'normalized_strength']
