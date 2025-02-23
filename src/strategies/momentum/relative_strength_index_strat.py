@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import logging
 from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
-from src.database.config import DatabaseConfig  # Ensure DatabaseConfig is imported
+from src.database.config import DatabaseConfig  # Ensure the DatabaseConfig is imported
 
 
 class RSIStrategy(BaseStrategy):
@@ -47,11 +47,7 @@ class RSIStrategy(BaseStrategy):
             - 'take_profit_pct': Take profit percentage (e.g., 0.10).
             - 'slippage_pct': Slippage percentage (e.g., 0.001).
             - 'transaction_cost_pct': Transaction cost percentage (e.g., 0.001).
-            - 'start_date': Backtest start date (YYYY-MM-DD). [Optional]
-            - 'end_date': Backtest end date (YYYY-MM-DD). [Optional]
-            - 'initial_position': Starting position (0 for flat, 1 for long, -1 for short). [Optional, default 0]
-            - 'latest_only': If True, return only the latest signal for live trading. [Optional, default False]
-            - 'long_only': If True, restrict trading to long positions only. [Optional, default True]
+            - 'long_only': Flag to allow only long positions (default True).
 
     Methods:
         generate_signals: Generates RSI signals with integrated risk management for a given ticker.
@@ -71,9 +67,14 @@ class RSIStrategy(BaseStrategy):
         """
         super().__init__(db_config, params or {})
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.params.setdefault('long_only', True)
 
-    # === CHANGE 1: Update method signature to match the base class ===
-    def generate_signals(self, ticker: str) -> pd.DataFrame:
+    def generate_signals(self, 
+                         ticker: str,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None,
+                         initial_position: int = 0,
+                         latest_only: bool = False) -> pd.DataFrame:
         """
         Generate RSI-based trading signals with integrated risk management.
 
@@ -85,17 +86,15 @@ class RSIStrategy(BaseStrategy):
 
         Args:
             ticker (str): The asset ticker symbol.
+            start_date (str, optional): Backtest start date (YYYY-MM-DD).
+            end_date (str, optional): Backtest end date (YYYY-MM-DD).
+            initial_position (int): Initial position (0 for flat, 1 for long, -1 for short).
+            latest_only (bool): If True, returns only the latest available signal for live trading.
 
         Returns:
             pd.DataFrame: DataFrame with columns 'close', 'high', 'low', 'signal', 'signal_strength', 'rsi', 
                           'return', 'position', 'cumulative_return', and 'exit_type', indexed by date.
         """
-        start_date = self.params.get('start_date')
-        end_date = self.params.get('end_date')
-        initial_position = self.params.get('initial_position', 0)
-        latest_only = self.params.get('latest_only', False)
-        long_only = self.params.get('long_only', True)
-
         # Validate strategy-specific parameters
         params = self._validate_parameters()
         rsi_period = params['rsi_period']
@@ -126,7 +125,7 @@ class RSIStrategy(BaseStrategy):
             'stop_loss_pct', 'take_profit_pct', 
             'slippage_pct', 'transaction_cost_pct'
         ] if k in self.params}
-
+        
         # Apply integrated risk management rules
         return self._apply_risk_management(
             signals_df, 
@@ -240,6 +239,7 @@ class RSIStrategy(BaseStrategy):
                 - pd.Series: Generated signals (1 for buy, -1 for sell, 0 otherwise).
                 - pd.Series: Normalized signal strength between 0 and 1.
         """
+        # Generate boolean masks for signal crossovers
         buy_signal = (rsi.shift(1) <= oversold) & (rsi > oversold)
         sell_signal = (rsi.shift(1) >= overbought) & (rsi < overbought)
 
@@ -279,7 +279,7 @@ class RSIStrategy(BaseStrategy):
             df (pd.DataFrame): DataFrame containing price data and generated signals.
             risk_params (dict): Dictionary of risk management parameters.
             initial_position (int): Starting trading position.
-            latest_only (bool): If True, returns only the latest signal.
+            latest_only (bool): Flag to indicate if only the latest signal should be returned.
             start_date (str, optional): Start date for backtesting.
             end_date (str, optional): End date for backtesting.
 
