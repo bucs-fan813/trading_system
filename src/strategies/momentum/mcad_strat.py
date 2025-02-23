@@ -15,6 +15,7 @@ class MACDStrategy(BaseStrategy):
         fast (int): Fast EMA period (default: 12)
         smooth (int): Signal line EMA period (default: 9)
         lookback (int): Historical data window (default: 252)
+        long_only (bool): Flag to restrict trading to long positions only (default: True)
 
 
     Long-Only Approach Confirmation:
@@ -34,6 +35,7 @@ class MACDStrategy(BaseStrategy):
         self.params.setdefault('fast', 12)
         self.params.setdefault('smooth', 9)
         self.params.setdefault('lookback', 252)
+        self.params.setdefault('long_only', True)
         
         # Validate parameters
         if self.params['slow'] <= self.params['fast']:
@@ -64,7 +66,7 @@ class MACDStrategy(BaseStrategy):
             signals = self._generate_crossover_signals(macd_line, signal_line)
             
             # Calculate positions
-            positions = self._calculate_positions(signals)
+            signals = self._calculate_positions(signals)
             
             # Build output DataFrame
             return pd.DataFrame({
@@ -73,7 +75,6 @@ class MACDStrategy(BaseStrategy):
                 'signal_line': signal_line,
                 'histogram': histogram,
                 'signal': signals,
-                'position': positions,
                 'signal_strength': histogram  # Histogram as strength metric
             }).dropna()
             
@@ -112,5 +113,8 @@ class MACDStrategy(BaseStrategy):
     def _calculate_positions(self, signals: pd.Series) -> pd.Series:
         """Calculate positions using signal persistence."""
         positions = signals.replace(0, method='ffill').fillna(0)
-        positions[positions == -1] = 0  # Convert sells to exit signals
+        if self.long_only:
+            positions[positions == -1] = 0  # Convert sells to exit signals
+        else:
+            pass  # No changes needed for long/short positions
         return positions.astype(int)
