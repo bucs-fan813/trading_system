@@ -185,5 +185,5 @@ class RiskManager:
                                    'target_level', 'trade_multiplier', 'exit_price'])
 
         # Return the DataFrame with selected columns.
-        result = result.dropna()
+        result = result.dropna() # TODO: Remove this line to keep all rows
         return result
