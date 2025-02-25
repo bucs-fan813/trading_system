@@ -32,7 +32,6 @@ trading_system/
 │
 ├── tests/
 │   ├── __init__.py                     # Package initialization
-│   ├── Claude_testCase.py              # Test cases for Claude
 │   ├── collectors/                     # Tests for collectors
 │   ├── database/                       # Tests for database
 │
