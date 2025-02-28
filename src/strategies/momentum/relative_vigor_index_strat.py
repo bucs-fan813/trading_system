@@ -68,7 +68,7 @@ class RVIStrategy(BaseStrategy):
         self.params.setdefault('take_profit_pct', 0.10)
         self.params.setdefault('slippage_pct', 0.001)
         self.params.setdefault('transaction_cost_pct', 0.001)
-        self.long_only = self.params.get('long_only', True)
+        self.params.setdefault('long_only', True)
 
     def generate_signals(self, 
                          ticker: str,
