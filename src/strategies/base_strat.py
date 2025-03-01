@@ -3,8 +3,9 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, Union, List, Any
 from sqlalchemy import text, bindparam
+from time import perf_counter
 
 from src.database.config import DatabaseConfig
 from src.database.engine import create_db_engine
@@ -26,7 +27,7 @@ class BaseStrategy(ABC):
         db_engine: SQLAlchemy engine instance for database connection.
     """
 
-    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
+    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict[str, Any]] = None):
         """
         Initialize the base strategy.
 
@@ -38,14 +39,25 @@ class BaseStrategy(ABC):
         self.params = params or {}
         self.logger = logging.getLogger(self.__class__.__name__)
         self.db_engine = create_db_engine(db_config)
+        # Initialize cache dictionaries for company_info and financials if needed.
+        self._cache: Dict[str, Any] = {}
 
     @abstractmethod
-    def generate_signals(self, ticker: str) -> pd.DataFrame:
+    def generate_signals(self, ticker: str,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None,
+                         initial_position: int = 0,
+                         latest_only: bool = False) -> pd.DataFrame:
         """
         Abstract method to generate trading signals for a given ticker.
+        New optional arguments added to align with the child class.
 
         Args:
             ticker (str): Stock ticker symbol.
+            start_date (str, optional): Start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): End date in 'YYYY-MM-DD' format.
+            initial_position (int): Starting position (0, 1, or -1).
+            latest_only (bool): If True, returns only the most recent signal.
 
         Returns:
             pd.DataFrame: DataFrame with signals and relevant data.
@@ -78,8 +90,8 @@ class BaseStrategy(ABC):
         Returns:
             pd.DataFrame: Historical price data.
         """
+        t0 = perf_counter()
         if isinstance(tickers, str):
-            # Single ticker: use equality in the WHERE clause.
             params = {
                 'ticker': tickers,
                 'data_source': data_source
@@ -97,7 +109,6 @@ class BaseStrategy(ABC):
                 base_query += " AND date <= :to_date"
                 params['to_date'] = to_date
 
-            # If no date filters are provided, then apply a SQL LIMIT
             if not from_date and not to_date:
                 base_query += " ORDER BY date DESC LIMIT :lookback"
                 params['lookback'] = lookback
@@ -106,14 +117,10 @@ class BaseStrategy(ABC):
 
             query = text(base_query)
             df = self._execute_query(query, params, index_col='date')
-            # If no date filters were provided, sort the DataFrame in ascending order.
             if not from_date and not to_date:
                 df = df.sort_index()
             df.index = pd.to_datetime(df.index)
-            return df
-
         else:
-            # Multiple tickers: use an IN clause.
             params = {
                 'tickers': tickers,
                 'data_source': data_source
@@ -131,29 +138,26 @@ class BaseStrategy(ABC):
                 base_query += " AND date <= :to_date"
                 params['to_date'] = to_date
 
-            # When date filters are provided, the SQL query already limits the output.
             if from_date or to_date:
                 base_query += " ORDER BY ticker, date ASC"
                 query = text(base_query).bindparams(bindparam("tickers", expanding=True))
                 df = self._execute_query(query, params)
             else:
-                # Without date filters, we cannot apply per-ticker limit via SQL easily.
-                # So, retrieve all rows ordered by ticker and date and then group by ticker
-                # to keep only the last 'lookback' records for each ticker.
                 base_query += " ORDER BY ticker, date ASC"
                 query = text(base_query).bindparams(bindparam("tickers", expanding=True))
                 df_full = self._execute_query(query, params)
                 df = df_full.groupby('ticker', group_keys=False).apply(lambda group: group.iloc[-lookback:])
-
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date'])
                 df = df.set_index(['ticker', 'date']).sort_index()
-            return df
+        t1 = perf_counter()
+        self.logger.debug("get_historical_prices executed in %.4f seconds", t1 - t0)
+        return df
 
     def get_company_info(self, tickers: Union[str, List[str]], data_source: str = 'yfinance') -> Union[pd.Series, pd.DataFrame]:
         """
         Retrieve fundamental company information from the database.
-        Supports a single ticker or multiple tickers.
+        Supports a single ticker or multiple tickers. Implements simple caching for repeated queries.
 
         Args:
             tickers (Union[str, List[str]]): Stock ticker symbol or list of tickers.
@@ -166,6 +170,10 @@ class BaseStrategy(ABC):
         Raises:
             DataRetrievalError: If no information is found for the provided ticker(s).
         """
+        cache_key = f"company_info_{tickers}_{data_source}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         if isinstance(tickers, str):
             query = text("""
                 SELECT *
@@ -177,9 +185,9 @@ class BaseStrategy(ABC):
             """)
             df = self._execute_query(query, {'ticker': tickers, 'data_source': data_source})
             if df.empty:
-                self.logger.error(f"No company info found for {tickers}")
+                self.logger.error("No company info found for %s", tickers)
                 raise DataRetrievalError(f"Company info not found for {tickers}")
-            return df.iloc[0]
+            result = df.iloc[0]
         else:
             query = text("""
                 SELECT *
@@ -190,91 +198,116 @@ class BaseStrategy(ABC):
             """).bindparams(bindparam("tickers", expanding=True))
             df = self._execute_query(query, {'tickers': tickers, 'data_source': data_source})
             if df.empty:
-                self.logger.error(f"No company info found for provided tickers: {tickers}")
+                self.logger.error("No company info found for provided tickers: %s", tickers)
                 raise DataRetrievalError(f"Company info not found for tickers: {tickers}")
-            # For each ticker, keep only the most recent record.
             df_sorted = df.sort_values(by=['ticker', 'updated_at'], ascending=[True, False])
             grouped = df_sorted.groupby('ticker', as_index=False).first()
-            return grouped.set_index('ticker')
+            result = grouped.set_index('ticker')
+        # Cache the result in memory.
+        self._cache[cache_key] = result
+        return result
 
     def get_financials(
         self,
         tickers: Union[str, List[str]],
         statement_type: str,
-        lookback: int = 4,
+        lookback: Optional[int] = None,
         data_source: str = 'yfinance'
     ) -> pd.DataFrame:
         """
         Retrieve financial statements data.
-        Supports a single ticker or multiple tickers.
+        Supports a single ticker or multiple tickers. If lookback is provided,
+        limits the data to the most recent periods; otherwise, extracts all available data.
+        Simple caching is applied to improve performance on repeated calls.
 
         Args:
             tickers (Union[str, List[str]]): Stock ticker symbol or list of tickers.
             statement_type (str): Statement type ('balance_sheet', 'income_statement', 'cash_flow').
-            lookback (int): Number of periods to retrieve for each ticker.
+            lookback (int, optional): Number of periods to retrieve for each ticker.
             data_source (str): Data source (e.g., 'yfinance').
 
         Returns:
-            pd.DataFrame: Financial statement data. For single ticker, the DataFrame is indexed by date.
-                          For multiple tickers, the DataFrame has a MultiIndex [ticker, date].
+            pd.DataFrame: Financial statement data with appropriate ordering.
+                         For a single ticker, the DataFrame is indexed by date.
+                         For multiple tickers, the DataFrame has a MultiIndex (ticker, date).
 
         Raises:
             ValueError: If the statement type is invalid.
         """
+        cache_key = f"financials_{tickers}_{statement_type}_{lookback}_{data_source}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         table_map = {
             'balance_sheet': 'balance_sheet',
             'income_statement': 'income_statement',
             'cash_flow': 'cash_flow'
         }
         if statement_type not in table_map:
-            raise ValueError(f"Invalid statement type: {statement_type}. "
-                             f"Valid options: {list(table_map.keys())}")
-
+            raise ValueError(f"Invalid statement type: {statement_type}. Valid options: {list(table_map.keys())}")
+        
         if isinstance(tickers, str):
-            query = text(f"""
-                SELECT *
-                FROM {table_map[statement_type]}
-                WHERE ticker = :ticker
-                AND data_source = :data_source
-                ORDER BY date DESC 
-                LIMIT :lookback
-            """)
-            params = {'ticker': tickers, 'data_source': data_source, 'lookback': lookback}
+            if lookback is not None:
+                query = text(f"""
+                    SELECT *
+                    FROM {table_map[statement_type]}
+                    WHERE ticker = :ticker
+                    AND data_source = :data_source
+                    ORDER BY date DESC 
+                    LIMIT :lookback
+                """)
+                params = {'ticker': tickers, 'data_source': data_source, 'lookback': lookback}
+            else:
+                query = text(f"""
+                    SELECT *
+                    FROM {table_map[statement_type]}
+                    WHERE ticker = :ticker
+                    AND data_source = :data_source
+                    ORDER BY date ASC
+                """)
+                params = {'ticker': tickers, 'data_source': data_source}
             df = self._execute_query(query, params)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date'])
                 df = df.set_index('date').sort_index()
-            return df
+            else:
+                self.logger.warning("No financial data retrieved for ticker: %s", tickers)
         else:
-            # When handling multiple tickers, fetch all data (ordered descending by date)
-            # and then group by ticker to take the most recent 'lookback' periods.
-            query_str = f"""
-                SELECT *
-                FROM {table_map[statement_type]}
-                WHERE ticker IN :tickers
-                AND data_source = :data_source
-                ORDER BY date DESC
-            """
-            query = text(query_str).bindparams(bindparam("tickers", expanding=True))
-            df_all = self._execute_query(query, {'tickers': tickers, 'data_source': data_source})
-            if df_all.empty:
-                self.logger.warning("No financial data retrieved for the provided tickers.")
-                return df_all
+            params = {'tickers': tickers, 'data_source': data_source}
+            if lookback is not None:
+                base_query = f"""
+                    SELECT *
+                    FROM {table_map[statement_type]}
+                    WHERE ticker IN :tickers
+                    AND data_source = :data_source
+                    ORDER BY date DESC
+                """
+                query = text(base_query).bindparams(bindparam("tickers", expanding=True))
+                df_all = self._execute_query(query, params)
+                df = df_all.groupby('ticker', group_keys=False).apply(
+                    lambda group: group.sort_values(by='date', ascending=False).head(lookback).sort_values(by='date')
+                )
+            else:
+                base_query = f"""
+                    SELECT *
+                    FROM {table_map[statement_type]}
+                    WHERE ticker IN :tickers
+                    AND data_source = :data_source
+                    ORDER BY date ASC
+                """
+                query = text(base_query).bindparams(bindparam("tickers", expanding=True))
+                df = self._execute_query(query, params)
+            if not df.empty and 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                if 'ticker' in df.columns:
+                    df = df.set_index(['ticker', 'date']).sort_index()
+        self._cache[cache_key] = df
+        return df
 
-            def process_group(group: pd.DataFrame) -> pd.DataFrame:
-                group_sorted = group.sort_values(by='date', ascending=False).head(lookback)
-                # Sort the limited group in ascending order before returning.
-                return group_sorted.sort_values(by='date')
-
-            df_processed = df_all.groupby('ticker', group_keys=False).apply(process_group)
-            if not df_processed.empty:
-                df_processed['date'] = pd.to_datetime(df_processed['date'])
-                df_processed = df_processed.set_index(['ticker', 'date']).sort_index()
-            return df_processed
-
-    def _execute_query(self, query, params: dict, index_col: Optional[str] = None) -> pd.DataFrame:
+    def _execute_query(self, query: Any, params: dict, index_col: Optional[str] = None) -> pd.DataFrame:
         """
         Execute a SQL query and return the results in a DataFrame.
+        Logs the execution time for performance monitoring.
 
         Args:
             query: SQLAlchemy text query.
@@ -284,19 +317,21 @@ class BaseStrategy(ABC):
         Returns:
             pd.DataFrame: DataFrame containing query results.
         """
+        t0 = perf_counter()
         try:
             with self.db_engine.connect() as connection:
                 result = connection.execute(query, params)
                 data = result.fetchall()
                 df = pd.DataFrame(data, columns=result.keys())
                 if index_col and index_col in df.columns:
-                    # Convert the index column into datetime for proper sorting.
                     df[index_col] = pd.to_datetime(df[index_col])
                     df = df.set_index(index_col).sort_index()
-                return df
         except Exception as e:
-            self.logger.error(f"Database error: {str(e)}")
+            self.logger.error("Database error: %s", str(e))
             raise
+        t1 = perf_counter()
+        self.logger.debug("Executed query in %.4f seconds", t1 - t0)
+        return df
 
     def _validate_data(self, df: pd.DataFrame, min_records: int = 1) -> bool:
         """
@@ -323,4 +358,4 @@ class BaseStrategy(ABC):
                 self.db_engine.dispose()
                 self.logger.debug("Database engine disposed successfully")
             except Exception as e:
-                self.logger.error(f"Error disposing database engine: {str(e)}")
+                self.logger.error("Error disposing database engine: %s", str(e))
