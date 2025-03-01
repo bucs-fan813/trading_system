@@ -42,9 +42,11 @@ class AroonStrategy(BaseStrategy):
                 - 'take_profit_pct': Take profit percentage (default 0.10).
                 - 'slippage_pct': Slippage percentage (default 0.001).
                 - 'transaction_cost_pct': Transaction cost percentage (default 0.001).
+                - 'long_only': If True, only long positions are allowed (default True).
         """
         super().__init__(db_config, params)
         self.lookback = self.params.get('lookback', 25)
+        self.long_only = self.params.get('long_only', True)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
@@ -97,8 +99,10 @@ class AroonStrategy(BaseStrategy):
         long_cond = (df['aroon_up'] >= 70) & (df['aroon_down'] <= 30)
         short_cond = (df['aroon_up'] <= 30) & (df['aroon_down'] >= 70)
         signals = np.where(long_cond, 1, signals)
-        signals = np.where(short_cond, -1, signals)
-        
+        if self.long_only:
+            signals = np.where(short_cond, 0, signals)
+        else:
+            signals = np.where(short_cond, -1, signals)
         # Forward fill signals until a reversal is detected.
         signals = pd.Series(signals, index=df.index).replace(0, np.nan).ffill().fillna(0)
         return signals.astype(int)

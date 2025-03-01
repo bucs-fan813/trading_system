@@ -145,8 +145,8 @@ class RiskManager:
             [
                 df['stop_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
                 df['target_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
-                df['stop_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
-                df['target_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                df['stop_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                df['target_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
                 df['close'] * (1 - (df['raw_position'] * (self.slippage_pct + self.transaction_cost_pct)))
             ],
             default=np.nan
@@ -184,6 +184,4 @@ class RiskManager:
         result = df.drop(columns=['raw_position', 'entry_price' ,'stop_level',
                                    'target_level', 'trade_multiplier', 'exit_price'])
 
-        # Return the DataFrame with selected columns.
-        result = result.dropna() # TODO: Remove this line to keep all rows
         return result

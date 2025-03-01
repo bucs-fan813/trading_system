@@ -50,9 +50,11 @@ class ADXStrategy(BaseStrategy):
                     - 'slippage': Slippage percentage (default 0.001)
                     - 'transaction_cost': Transaction cost percentage (default 0.001)
                     - 'adx_lookback': Lookback period for ADX calculation (default 14)
+                    - 'long_only': Flag to allow only long positions (default True)
         """
         super().__init__(db_config, params)
         self.default_lookback = 14  # Default ADX period if not provided
+        self.long_only = self.params.get('long_only', True)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
@@ -261,7 +263,11 @@ class ADXStrategy(BaseStrategy):
         
         signals['signal'] = 0
         signals.loc[long_signal, 'signal'] = 1
-        signals.loc[short_signal, 'signal'] = -1
+        if self.long_only:
+            # Override short signals if long_only is True
+            signals.loc[short_signal, 'signal'] = 0
+        else:
+            signals.loc[short_signal, 'signal'] = -1
         signals['signal_strength'] = signal_strength
         
         return signals

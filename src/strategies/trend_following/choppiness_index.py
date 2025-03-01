@@ -43,6 +43,7 @@ class ChoppinessIndexStrategy(BaseStrategy):
         logger (logging.Logger): Logger instance.
         db_engine: SQLAlchemy engine for database connection.
         risk_manager (RiskManager): Instance of RiskManager for applying stop-loss, take-profit, etc.
+        long_only (bool): If True, only long positions are allowed.
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
@@ -54,6 +55,7 @@ class ChoppinessIndexStrategy(BaseStrategy):
             params (dict, optional): Strategy and risk management parameters.
         """
         super().__init__(db_config, params)
+        self.long_only = self.params.get('long_only', True)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
@@ -225,7 +227,11 @@ class ChoppinessIndexStrategy(BaseStrategy):
         # Generate raw signals: 1 for bullish, -1 for bearish
         df['raw_signal'] = 0
         df.loc[bullish, 'raw_signal'] = 1
-        df.loc[bearish, 'raw_signal'] = -1
+        
+        if self.long_only:
+            df.loc[bearish, 'raw_signal'] = 0
+        else:
+            df.loc[bearish, 'raw_signal'] = -1
         
         # Forward-fill the signal so that positions persist until a reversal
         df['signal'] = df['raw_signal'].replace(0, np.nan).ffill().fillna(0)
