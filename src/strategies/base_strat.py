@@ -6,6 +6,7 @@ import logging
 from typing import Dict, Optional, Union, List, Any
 from sqlalchemy import text, bindparam
 from time import perf_counter
+from joblib import Memory
 
 from src.database.config import DatabaseConfig
 from src.database.engine import create_db_engine
@@ -26,6 +27,9 @@ class BaseStrategy(ABC):
         logger (logging.Logger): Logger instance.
         db_engine: SQLAlchemy engine instance for database connection.
     """
+
+    # Class-level (static) Memory instance shared by all instances and subclasses
+    memory = Memory("./cache_dir", verbose=0)
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict[str, Any]] = None):
         """
@@ -64,6 +68,8 @@ class BaseStrategy(ABC):
         """
         pass
 
+    @staticmethod
+    @memory.cache
     def get_historical_prices(
         self,
         tickers: Union[str, List[str]],
@@ -154,6 +160,8 @@ class BaseStrategy(ABC):
         self.logger.debug("get_historical_prices executed in %.4f seconds", t1 - t0)
         return df
 
+    @staticmethod
+    @memory.cache
     def get_company_info(self, tickers: Union[str, List[str]], data_source: str = 'yfinance') -> Union[pd.Series, pd.DataFrame]:
         """
         Retrieve fundamental company information from the database.
@@ -207,6 +215,8 @@ class BaseStrategy(ABC):
         self._cache[cache_key] = result
         return result
 
+    @staticmethod
+    @memory.cache
     def get_financials(
         self,
         tickers: Union[str, List[str]],
@@ -304,6 +314,8 @@ class BaseStrategy(ABC):
         self._cache[cache_key] = df
         return df
 
+    @staticmethod
+    @memory.cache
     def _execute_query(self, query: Any, params: dict, index_col: Optional[str] = None) -> pd.DataFrame:
         """
         Execute a SQL query and return the results in a DataFrame.
