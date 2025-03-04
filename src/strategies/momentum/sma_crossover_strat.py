@@ -3,73 +3,95 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, List
+
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
+
 
 class SMAStrategy(BaseStrategy):
     """
     SMA Crossover Strategy with Integrated Risk Management
 
-    This strategy employs a simple moving average (SMA) crossover system to generate 
-    trading signals and incorporates risk management rules (stop-loss, take-profit, slippage,
-    and transaction cost adjustments).
+    This strategy implements a simple moving average (SMA) crossover system to generate trading signals and simulate trades.
+    The core mathematical formulas are as follows:
 
-    Let S_t denote the short-term SMA and L_t denote the long-term SMA calculated as:
-    
-        S_t = (1/N_short) * sum(close[t-N_short+1:t])
-        L_t = (1/N_long) * sum(close[t-N_long+1:t])
-    
-    A buy (long) signal is generated when:
-        S_t > L_t  and  S_{t-1} <= L_{t-1}
-    
-    A sell (short) signal is generated when:
-        S_t < L_t  and  S_{t-1} >= L_{t-1}
+      Let Sₜ = (1/Nₛₕₒᵣₜ) * sum(close[t-Nₛₕₒᵣₜ+1:t]) be the short-term SMA and 
+          Lₜ = (1/Nₗₒₙg) * sum(close[t-Nₗₒₙg+1:t]) be the long-term SMA.
 
-    The signal strength is computed as:
-    
-        strength = (S_t - L_t) / close_t
+    Trading Signals:
+      - A buy signal (signal = 1) is generated when:
+              Sₜ > Lₜ  and  Sₜ₋₁ ≤ Lₜ₋₁,
+        indicating a bullish crossover.
+      - A sell signal (signal = -1) is generated when:
+              Sₜ < Lₜ  and  Sₜ₋₁ ≥ Lₜ₋₁,
+        indicating a bearish crossover.
+      - Signal strength is computed as:
+              strength = (Sₜ - Lₜ) / close,
+        so that the indicator is normalized by the current price.
+      - In long-only mode, sell signals are overridden (set to 0).
 
-    Risk management is applied on top of the generated signals. For a long trade entered at an 
-    adjusted entry price P_entry, the stop loss is:
+    Risk Management:
+      Risk management is applied via a RiskManager, which adjusts the entry price (taking into account slippage 
+      and transaction costs) and then sets stop-loss and take-profit thresholds:
+        - For long trades: 
+              P_stop = P_entry * (1 - stop_loss_pct) and P_target = P_entry * (1 + take_profit_pct).
+        - For short trades, these thresholds are reversed.
+      When an exit condition is met (whether by stop-loss, take-profit, or signal reversal), the realized trade return is computed:
+        - For long trades: (exit_price / entry_price) - 1.
+        - For short trades: (entry_price / exit_price) - 1.
+      Cumulative return is computed as the cumulative product of the trade multipliers.
+
+    Multi-Ticker and Execution:
+      The strategy supports both single and multiple tickers. When a list of tickers is provided, data retrieval is 
+      done in a vectorized manner that returns a MultiIndex DataFrame (ticker, date) and processing is performed 
+      per ticker via Pandas groupby operations.
+      The strategy supports:
+        - Backtesting (using a specified start and end date) which produces a full DataFrame (allowing calculation 
+          of Sharpe ratio, max drawdown, etc.).
+        - Forecasting the latest signal (using a minimal lookback of long_window + 2 bars) which is efficient for EOD decisions.
     
-        P_stop = P_entry * (1 - stop_loss_pct)
+    Returns:
+      A DataFrame with at least the following columns:
+         - 'signal'             : Trade signal (-1, 0, or 1).
+         - 'strength'           : Normalized signal strength.
+         - 'close', 'high', 'low': Price data.
+         - 'short_sma', 'long_sma': Computed SMAs.
+         - 'position'           : Position after applying risk management.
+         - 'return'             : Realized return on the exit event.
+         - 'cumulative_return'  : Cumulative return from closed trades.
+         - 'exit_type'          : Reason for trade exit.
     
-    and the take profit is:
-    
-        P_target = P_entry * (1 + take_profit_pct)
-    
-    (with roles reversed for short trades). Slippage and transaction costs are applied at entry 
-    and exit. The realized return for each trade and cumulative return are computed, providing a 
-    full DataFrame (with close, high, low prices available) for further analytics and downstream 
-    optimization.
-    
-    The strategy supports both backtesting (with explicit start and end dates) and efficient 
-    generation of the latest signal (using a minimal lookback).
+    Args:
+      tickers (str or List[str]): A single ticker symbol or a list of ticker symbols.
+      start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+      end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+      initial_position (int, optional): Starting trade position (default is 0, i.e. no position).
+      latest_only (bool, optional): If True, returns only the latest signal row per ticker (for forecasting/decision-making).
+
+    Strategy-specific parameters provided in `params` include:
+      - 'short_window'         : Window for short SMA (default: 20).
+      - 'long_window'          : Window for long SMA (default: 50).
+      - 'stop_loss_pct'        : Stop-loss percentage (default: 0.05).
+      - 'take_profit_pct'      : Take-profit percentage (default: 0.10).
+      - 'slippage_pct'         : Slippage percentage (default: 0.001).
+      - 'transaction_cost_pct' : Transaction cost percentage (default: 0.001).
+      - 'long_only'            : If True, only long trades are allowed (default: True).
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the SMA Strategy.
+        Initialize the SMA Crossover Strategy with risk management parameters.
 
         Args:
-            db_config (DatabaseConfig): Database configuration settings.
-            params (Dict, optional): Strategy-specific parameters. Valid parameters include:
-                - short_window (int): Window for short SMA (default: 20).
-                - long_window (int): Window for long SMA (default: 50).
-                - stop_loss_pct (float): Stop-loss percentage (default: 0.05).
-                - take_profit_pct (float): Take-profit percentage (default: 0.10).
-                - slippage_pct (float): Slippage percentage (default: 0.001).
-                - transaction_cost_pct (float): Transaction cost percentage (default: 0.001).
-                - long_only (bool): If True, only long trades are allowed (default: True).
-
+          db_config (DatabaseConfig): Database configuration settings.
+          params (Dict, optional): Strategy-specific parameters.
+        
         Raises:
-            ValueError: If short_window is not less than long_window.
+          ValueError: If short_window is not less than long_window.
         """
         super().__init__(db_config, params)
-        
-        # Initialize strategy parameters with defaults and validations.
         self.short_window = self.params.get('short_window', 20)
         self.long_window = self.params.get('long_window', 50)
         self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
@@ -77,162 +99,180 @@ class SMAStrategy(BaseStrategy):
         self.slippage_pct = self.params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
         self.long_only = self.params.get('long_only', True)
-        
+
         if self.short_window >= self.long_window:
             raise ValueError("short_window must be less than long_window")
-        
-        self.logger.debug(f"Initialized SMA Strategy: short={self.short_window}, long={self.long_window}")
+
+        self.logger.debug(f"Initialized SMA Strategy with short_window={self.short_window} and long_window={self.long_window}")
 
     def generate_signals(
         self,
-        ticker: str,
+        tickers: Union[str, List[str]],
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         initial_position: int = 0,
         latest_only: bool = False
     ) -> pd.DataFrame:
         """
-        Generate SMA crossover signals with integrated risk management.
+        Generate SMA crossover signals and simulate trade outcomes with integrated risk management.
 
-        In backtest mode (when latest_only=False), historical price data are retrieved within 
-        the specified date range and the SMA’s are computed, generating signals. The RiskManager 
-        is then applied to calculate entry/exit prices (adjusted for slippage and transaction costs), 
-        stop-loss and take-profit thresholds, realized returns, and the cumulative return.
+        In backtest mode (latest_only=False), this method retrieves historical price data between the specified 
+        start and end dates, calculates the moving averages, generates signals from the crossovers, and then applies 
+        risk management to simulate trade entries and exits.
 
-        In latest_only mode, a minimal lookback (long_window + 2) is used and only the most recent 
-        signal is returned. All operations are performed in a vectorized manner for speed.
+        In forecast mode (latest_only=True), it uses a minimal lookback (long_window + 2) to compute stable SMAs and 
+        returns only the latest signal row for each ticker.
 
         Args:
-            ticker (str): Stock ticker symbol.
-            start_date (str, optional): Backtest start date in YYYY-MM-DD.
-            end_date (str, optional): Backtest end date in YYYY-MM-DD.
-            initial_position (int, optional): Initial position (0 for flat).
-            latest_only (bool, optional): If True, return signal only for the latest date.
+          tickers (str or List[str]): A single ticker symbol or a list of ticker symbols.
+          start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+          end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+          initial_position (int, optional): Starting position (default is 0).
+          latest_only (bool, optional): If True, return only the most current signal for each ticker.
 
         Returns:
-            pd.DataFrame: DataFrame containing at least the following columns:
-                - 'signal': Trade signal (-1, 0, or 1).
-                - 'strength': Normalized difference (short_sma - long_sma) / close.
-                - 'close', 'high', 'low': Price data.
-                - 'short_sma', 'long_sma': The computed SMAs.
-                - 'position': Position after risk management.
-                - 'return': Realized trade return on exit events.
-                - 'cumulative_return': Cumulative return over time.
-                - 'exit_type': Reason for exiting the trade.
+          pd.DataFrame: DataFrame containing signals and risk-managed trade data.
         """
-        try:
-            if latest_only:
-                return self._generate_latest_signal(ticker)
-            
-            # Backtesting mode: retrieve historical prices between start and end dates.
-            df = self.get_historical_prices(
-                ticker,
-                from_date=start_date,
-                to_date=end_date
-            )
-            
-            if not self._validate_data(df, min_records=self.long_window+1):
-                self.logger.error(f"Insufficient data for {ticker}")
-                return pd.DataFrame()
-
-            # Calculate SMAs and generate raw signals.
-            signals = self._calculate_smas_and_signals(df)
-            
-            # Apply risk management adjustments.
-            risk_manager = RiskManager(
-                stop_loss_pct=self.stop_loss_pct,
-                take_profit_pct=self.take_profit_pct,
-                slippage_pct=self.slippage_pct,
-                transaction_cost_pct=self.transaction_cost_pct
-            )
-            
-            return risk_manager.apply(signals, initial_position)
-
-        except Exception as e:
-            self.logger.error(f"Error processing {ticker}: {str(e)}")
-            raise
+        # Latest signal mode: use a minimal lookback window
+        if latest_only:
+            lookback = self.long_window + 2
+            if isinstance(tickers, str):
+                df = self.get_historical_prices(tickers, lookback=lookback)
+                if not self._validate_data(df, min_records=lookback):
+                    self.logger.error(f"Insufficient data for ticker {tickers}")
+                    return pd.DataFrame()
+                signals = self._calculate_smas_and_signals(df)
+                latest_signal = signals.iloc[-1:]
+                return latest_signal[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
+            else:
+                df = self.get_historical_prices(tickers, lookback=lookback)
+                if df.empty:
+                    return pd.DataFrame()
+                def latest_per_ticker(group):
+                    if not self._validate_data(group, min_records=lookback):
+                        self.logger.error("Insufficient data for ticker %s", group.name)
+                        return pd.DataFrame()
+                    signals = self._calculate_smas_and_signals(group)
+                    return signals.iloc[-1:]
+                latest_signals = df.groupby(level='ticker', group_keys=False).apply(latest_per_ticker)
+                return latest_signals[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
+        else:
+            # Backtesting mode: retrieve full historical prices within the specified date range.
+            if isinstance(tickers, str):
+                df = self.get_historical_prices(tickers, from_date=start_date, to_date=end_date)
+                if not self._validate_data(df, min_records=self.long_window + 1):
+                    self.logger.error(f"Insufficient data for ticker {tickers}")
+                    return pd.DataFrame()
+                signals = self._calculate_smas_and_signals(df)
+                risk_manager = RiskManager(
+                    stop_loss_pct=self.stop_loss_pct,
+                    take_profit_pct=self.take_profit_pct,
+                    slippage_pct=self.slippage_pct,
+                    transaction_cost_pct=self.transaction_cost_pct
+                )
+                return risk_manager.apply(signals, initial_position)
+            else:
+                df = self.get_historical_prices(tickers, from_date=start_date, to_date=end_date)
+                if df.empty:
+                    return pd.DataFrame()
+                risk_manager = RiskManager(
+                    stop_loss_pct=self.stop_loss_pct,
+                    take_profit_pct=self.take_profit_pct,
+                    slippage_pct=self.slippage_pct,
+                    transaction_cost_pct=self.transaction_cost_pct
+                )
+                def process_ticker(group):
+                    if not self._validate_data(group, min_records=self.long_window + 1):
+                        self.logger.error("Insufficient data for ticker %s", group.name)
+                        return pd.DataFrame()
+                    signals = self._calculate_smas_and_signals(group)
+                    return risk_manager.apply(signals, initial_position)
+                result = df.groupby(level='ticker', group_keys=False).apply(process_ticker)
+                return result
 
     def _calculate_smas_and_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate simple moving averages and generate crossover signals.
+        Calculate short and long SMAs from the close price and generate crossover-based trading signals.
 
-        This method computes the short and long SMAs from the 'close' price and then determines 
-        the crossover events. A buy signal (1) is generated when the short SMA crosses above the 
-        long SMA, and a sell signal (-1) is generated when it crosses below. The signal strength 
-        is computed as the normalized difference between the two SMAs.
+        The method computes:
+          - short_sma: Rolling mean of the close price over the short_window.
+          - long_sma: Rolling mean of the close price over the long_window.
+          - signal: A trade signal generated when:
+                      • A bullish crossover occurs (short_sma crosses above long_sma) -> 1.
+                      • A bearish crossover occurs (short_sma crosses below long_sma) -> -1.
+                      • Otherwise, 0.
+          - strength: Normalized difference computed as (short_sma - long_sma) / close.
+
+        In long-only mode, negative signals (sell signals) are overridden to 0.
 
         Args:
-            df (pd.DataFrame): DataFrame of historical price data. Must include 'close', 'high', and 'low'.
+          df (pd.DataFrame): Historical price data with columns 'close', 'high', and 'low'.
 
         Returns:
-            pd.DataFrame: DataFrame with new columns: 'signal', 'strength', 'short_sma', and 'long_sma'.
-                        Only these and the columns 'close', 'high', and 'low' are returned.
+          pd.DataFrame: DataFrame with columns: 'signal', 'strength', 'close', 'high', 'low', 'short_sma', and 'long_sma'.
         """
-        # Compute moving averages with vectorized rolling operations.
+        # Compute moving averages using vectorized rolling operations.
         df['short_sma'] = df['close'].rolling(window=self.short_window).mean()
         df['long_sma'] = df['close'].rolling(window=self.long_window).mean()
-        
-        # Create shifted SMAs for previous period comparison.
+
+        # Compute previous period SMAs to detect crossovers.
         df['prev_short'] = df['short_sma'].shift(1)
         df['prev_long'] = df['long_sma'].shift(1)
-        
-        # Determine crossover conditions (golden cross and death cross).
+
+        # Identify crossover conditions.
         cross_above = (df['short_sma'] > df['long_sma']) & (df['prev_short'] <= df['prev_long'])
         cross_below = (df['short_sma'] < df['long_sma']) & (df['prev_short'] >= df['prev_long'])
 
-        # Generate the trade signals: 1 for long, -1 for short, 0 otherwise.
+        # Generate the trade signal: 1 for bullish crossover, -1 for bearish, else 0.
         df['signal'] = np.select(
             [cross_above, cross_below],
             [1, -1],
             default=0
         )
-        
-        # Calculate signal strength as the normalized difference.
+
+        # Compute normalized signal strength.
         df['strength'] = (df['short_sma'] - df['long_sma']) / df['close']
 
+        # In long-only mode override negative signals with 0 (exit signal).
         if self.long_only:
-            df['signal'] = df['signal'].clip(lower=0)  # Override sell signals with 0 (exit)
-        
+            df['signal'] = df['signal'].clip(lower=0)
+
         return df[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
 
     def _generate_latest_signal(self, ticker: str) -> pd.DataFrame:
         """
-        Efficiently generate the signal for the latest available date using a minimal lookback.
+        Generate the latest trading signal for a given ticker using a minimal lookback window.
 
-        The method retrieves only (long_window + 2) bars so that the SMA calculations and the 
-        subsequent signal generation are stable. It then returns the most recent signal row.
+        Uses (long_window + 2) bars to compute stable SMAs and returns the last (most recent) row,
+        which contains the computed signal, its strength, and the relevant price indicators.
 
         Args:
-            ticker (str): Stock ticker symbol.
-
-        Returns:
-            pd.DataFrame: DataFrame with a single row containing columns: 
-                          'signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma'.
-        """
-        lookback = self.long_window + 2  # Sufficient bars to compute both SMAs accurately.
-        df = self.get_historical_prices(ticker, lookback=lookback)
+          ticker (str): Stock ticker symbol.
         
+        Returns:
+          pd.DataFrame: A single-row DataFrame with columns: 'signal', 'strength', 'close', 'high', 'low', 'short_sma', and 'long_sma'.
+        """
+        lookback = self.long_window + 2
+        df = self.get_historical_prices(ticker, lookback=lookback)
         if not self._validate_data(df, min_records=lookback):
-            self.logger.error(f"Insufficient data for {ticker}")
+            self.logger.error(f"Insufficient data for ticker {ticker}")
             return pd.DataFrame()
-
         signals = self._calculate_smas_and_signals(df)
         latest = signals.iloc[-1:]
-        
         return latest[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
 
     def _validate_data(self, df: pd.DataFrame, min_records: int) -> bool:
         """
-        Validate that the DataFrame has sufficient records for analysis.
+        Validate that the input DataFrame contains at least the minimum number of records necessary.
 
         Args:
-            df (pd.DataFrame): DataFrame to check.
-            min_records (int): Minimum required records.
-
+          df (pd.DataFrame): DataFrame to be validated.
+          min_records (int): Minimum required number of records.
+        
         Returns:
-            bool: True if the data meets the minimum requirement, False otherwise.
+          bool: True if the DataFrame meets the minimum record requirement; otherwise, False.
         """
         if df.empty or len(df) < min_records:
-            self.logger.warning(f"Data validation failed: {len(df)} records vs required {min_records}")
+            self.logger.warning(f"Data validation failed: {len(df)} records present, {min_records} required.")
             return False
         return True
