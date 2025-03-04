@@ -1,6 +1,6 @@
 # Trading Strategies Explanation
 
-This document provides an overview of the trading strategies implemented in this repository. For each strategy, the key formulas and signal generation logic are explained. **Note:** If you use this Markdown file on GitHub, keep in mind that the LaTeX math (delimited by `$$`) may not render by default. To view well-rendered math, consider using GitHub Pages with MathJax/KaTeX enabled or a compatible Markdown viewer.
+This document provides an overview of the trading strategies implemented in this repository. For each strategy, the key formulas and signal generation logic are explained. **Note:** If you use this Markdown file on GitHub, keep in mind that the LaTeX math (delimited by `$$`) may not render by default. To view well‐rendered math, consider using GitHub Pages with MathJax/KaTeX enabled or a compatible Markdown viewer.
 
 ---
 
@@ -13,13 +13,13 @@ $$
 $$
 
 Then, two simple moving averages (SMAs) are computed on the median price:
-- A **short–term SMA** (with period _nₛ_)
-- A **long–term SMA** (with period _nₗ_, where _nₛ_ < _nₗ_)
+- A **short–term SMA** (with period $n_{s}$)
+- A **long–term SMA** (with period $n_{l}$, where $n_{s} < n_{l}$)
 
-The Awesome Oscillator (AO) is given by:
+The Awesome Oscillator (AO) is defined as:
 
 $$
-\text{AO} = \text{SMA}_{nₛ} - \text{SMA}_{nₗ}
+\text{AO} = \text{SMA}_{n_{s}} - \text{SMA}_{n_{l}}
 $$
 
 **Signal Generation:**
@@ -28,13 +28,13 @@ $$
 
 In “long–only” mode, the sell signals are suppressed (converted to 0).
 
-The signal **strength** is defined as the normalized absolute AO value:
+The signal **strength** is the normalized absolute AO value:
 
 $$
 \text{signal\_strength} = \frac{|\text{AO}|}{\text{rolling\_std}(\text{AO}) + \epsilon}
 $$
 
-where \(\epsilon\) is a small constant (1e–6) to avoid division by zero.
+where $\epsilon$ is a small constant (1e–6) to avoid division by zero.
 
 ---
 
@@ -44,11 +44,11 @@ where \(\epsilon\) is a small constant (1e–6) to avoid division by zero.
 Two rates–of–change (ROC) are computed from the closing price using different lookback periods (in days estimated from input months):
 
 $$
-ROC1 = 100 \times \left(\frac{\text{Close}}{\text{Close}_{\text{lagged by }roc1\_days}} - 1\right)
+ROC1 = 100 \times \left(\frac{\text{Close}}{\text{Close}_{\text{lagged by }\,\text{roc1\_days}}} - 1\right)
 $$
 
 $$
-ROC2 = 100 \times \left(\frac{\text{Close}}{\text{Close}_{\text{lagged by }roc2\_days}} - 1\right)
+ROC2 = 100 \times \left(\frac{\text{Close}}{\text{Close}_{\text{lagged by }\,\text{roc2\_days}}} - 1\right)
 $$
 
 **Combined ROC and Smoothing:**  
@@ -76,12 +76,12 @@ The KST indicator is computed as the sum of several weighted moving averages of 
   $$
 
 - **Smoothed ROC:**  
-  The ROC is then smoothed using a simple moving average (SMA) over a specified period.
+  The above ROC is smoothed using a simple moving average (SMA) over a specified period.
 
 - **KST Indicator:**
 
   $$
-  \text{KST}(t) = \sum_{i=1}^{4} w_i \times \text{SMA}(\text{ROC}(\text{close}, \text{roc\_period}_{i}), \text{sma\_period}_{i})
+  \text{KST}(t) = \sum_{i=1}^{4} w_i \times \text{SMA}\Big( \text{ROC}\big(\text{close}, \text{roc\_period}_{i}\big), \text{sma\_period}_{i}\Big)
   $$
 
 - **Signal Line:**  
@@ -94,7 +94,7 @@ A bullish crossover (KST crossing above its signal line) triggers a long signal 
 ## 4. MCAD Strategy
 
 - **Fast EMA and Slow EMA:**  
-  The fast EMA (with span = fast) and the slow EMA (with span = slow) are computed on the close price.
+  The fast EMA (with span = `fast`) and the slow EMA (with span = `slow`) are computed on the close price.
 
 - **MACD Line:**  
 
@@ -110,7 +110,7 @@ A bullish crossover (KST crossing above its signal line) triggers a long signal 
 
 **Signal Generation:**
 - A crossover upward (MACD crossing above the signal line) generates a bullish signal (+1).
-- A crossover downward generates a bearish signal (–1) if not in long–only mode (or 0 if long–only).
+- A crossover downward generates a bearish signal (–1) if not in long‑only mode (or 0 if long‑only).
 
 ---
 
@@ -121,13 +121,13 @@ The RVI is computed as follows:
 - **Numerator:**
 
   $$
-  \text{Numerator}(t) = (C(t) - O(t)) + 2 \times (C(t-1) - O(t-1)) + 2 \times (C(t-2) - O(t-2)) + (C(t-3) - O(t-3))
+  \text{Numerator}(t) = \big( C(t) - O(t) \big) + 2 \times \big( C(t-1) - O(t-1) \big) + 2 \times \big( C(t-2) - O(t-2) \big) + \big( C(t-3) - O(t-3) \big)
   $$
 
 - **Denominator:**
 
   $$
-  \text{Denom}(t) = (H(t) - L(t)) + 2 \times (H(t-1) - L(t-1)) + 2 \times (H(t-2) - L(t-2)) + (H(t-3) - L(t-3))
+  \text{Denom}(t) = \big( H(t) - L(t) \big) + 2 \times \big( H(t-1) - L(t-1) \big) + 2 \times \big( H(t-2) - L(t-2) \big) + \big( H(t-3) - L(t-3) \big)
   $$
 
 - **Raw RVI:**
@@ -144,8 +144,8 @@ $$
 
 **Signal Generation:**
 - A **buy signal** is generated when the RVI crosses above its signal line.
-- A **sell signal** (–1) is generated when the RVI crosses below.
-- In “long–only” mode, sell signals are replaced with 0.
+- A **sell signal** (–1) is generated when the RVI crosses below its signal line.
+- In “long‑only” mode, sell signals are replaced with 0.
 
 The signal strength is computed as the z‑score of the absolute difference between the RVI and its signal line over a rolling window.
 
@@ -154,31 +154,31 @@ The signal strength is computed as the z‑score of the absolute difference betw
 ## 6. SMA Crossover
 
 - **SMA Calculations:**
-  - **Short–term SMA (Sₜ):**
+  - **Short–term SMA ($S_t$):**
 
     $$
-    Sₜ = \frac{1}{N_{\text{short}}} \sum \text{(close price over the past } N_{\text{short}} \text{ bars)}
+    S_t = \frac{1}{N_{\text{short}}} \sum \text{(close price over the past } N_{\text{short}} \text{ bars)}
     $$
 
-  - **Long–term SMA (Lₜ):**
+  - **Long–term SMA ($L_t$):**
 
     $$
-    Lₜ = \frac{1}{N_{\text{long}}} \sum \text{(close price over the past } N_{\text{long}} \text{ bars)}
+    L_t = \frac{1}{N_{\text{long}}} \sum \text{(close price over the past } N_{\text{long}} \text{ bars)}
     $$
 
 - **Signal Generation:**
   - **Buy signal (1):**  
-    Generated when a bullish crossover occurs (i.e., \(Sₜ > Lₜ\) and the previous period \(Sₜ_{-1} \leq Lₜ_{-1}\)).
+    Generated when a bullish crossover occurs (i.e., $S_t > L_t$ and the previous period $S_{t-1} \leq L_{t-1}$).
   - **Sell signal (–1):**  
-    Generated when a bearish crossover occurs (i.e., \(Sₜ < Lₜ\) and the previous period \(Sₜ_{-1} \geq Lₜ_{-1}\)).
+    Generated when a bearish crossover occurs (i.e., $S_t < L_t$ and the previous period $S_{t-1} \geq L_{t-1}$).
 
-Signal strength is calculated as the normalized difference, i.e.,
+Signal strength is calculated as the normalized difference:
 
 $$
-\text{signal strength} = \frac{Sₜ - Lₜ}{\text{close price}}
+\text{signal strength} = \frac{S_t - L_t}{\text{close}}
 $$
 
-In “long–only” mode, sell signals (–1) are overridden to 0.
+In “long‑only” mode, sell signals (–1) are overridden to 0.
 
 ---
 
@@ -196,13 +196,13 @@ The True Strength Index (TSI) is computed as follows:
   - **Double smoothed delta:**
 
     $$
-    \text{double\_smoothed} = EMA\big(EMA(\Delta, \text{span} = \text{long\_period}), \text{span} = \text{short\_period}\big)
+    \text{double\_smoothed} = EMA\Big( EMA\big(\Delta,\, \text{span} = \text{long\_period} \big),\, \text{span} = \text{short\_period} \Big)
     $$
 
   - **Double smoothed absolute delta:**
 
     $$
-    \text{abs\_double\_smoothed} = EMA\big(EMA(|\Delta|, \text{span} = \text{long\_period}), \text{span} = \text{short\_period}\big)
+    \text{abs\_double\_smoothed} = EMA\Big( EMA\big(|\Delta|,\, \text{span} = \text{long\_period} \big),\, \text{span} = \text{short\_period} \Big)
     $$
 
 - **TSI and Signal Line:**
@@ -212,12 +212,12 @@ The True Strength Index (TSI) is computed as follows:
   $$
 
   $$
-  \text{signal\_line} = EMA(TSI, \text{span} = \text{signal\_period})
+  \text{signal\_line} = EMA\Big( TSI,\, \text{span} = \text{signal\_period} \Big)
   $$
 
 - **Signals:**
   - **Buy signal (+1):** Generated when the TSI crosses above its signal line (i.e., the prior bar was below and the current bar is above).
   - **Sell signal (–1):** Generated when the TSI crosses below its signal line.  
-    In long–only mode, sell signals are forced to 0.
+    In long‑only mode, sell signals are forced to 0.
 
 ---
