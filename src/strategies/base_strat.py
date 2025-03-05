@@ -69,7 +69,7 @@ class BaseStrategy(ABC):
         pass
 
     @staticmethod
-    @memory.cache
+    @memory.cache(ignore=[0])
     def get_historical_prices(
         self,
         tickers: Union[str, List[str]],
@@ -161,7 +161,7 @@ class BaseStrategy(ABC):
         return df
 
     @staticmethod
-    @memory.cache
+    @memory.cache(ignore=[0])
     def get_company_info(self, tickers: Union[str, List[str]], data_source: str = 'yfinance') -> Union[pd.Series, pd.DataFrame]:
         """
         Retrieve fundamental company information from the database.
@@ -216,7 +216,7 @@ class BaseStrategy(ABC):
         return result
 
     @staticmethod
-    @memory.cache
+    @memory.cache(ignore=[0])
     def get_financials(
         self,
         tickers: Union[str, List[str]],
@@ -315,7 +315,7 @@ class BaseStrategy(ABC):
         return df
 
     @staticmethod
-    @memory.cache
+    @memory.cache(ignore=[0])
     def _execute_query(self, query: Any, params: dict, index_col: Optional[str] = None) -> pd.DataFrame:
         """
         Execute a SQL query and return the results in a DataFrame.
