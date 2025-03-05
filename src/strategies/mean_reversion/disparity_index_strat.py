@@ -2,7 +2,7 @@
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, List
 import logging
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
@@ -11,51 +11,68 @@ from src.database.config import DatabaseConfig
 
 class DisparityIndexStrategy(BaseStrategy):
     """
-    Disparity Index Strategy with integrated risk management.
+    Disparity Index Strategy with Integrated Risk Management.
 
     Mathematical Explanation:
     ---------------------------
     The strategy calculates the Disparity Index (DI) as:
-       DI = ((Close - MA) / MA) * 100,
-    where MA is the moving average of the close price over a period (default 14 days).
-    A buy signal is generated when DI turns positive, given that DI was negative for a series 
-    of consecutive days (default 4). Similarly, a sell signal is generated when DI turns negative 
-    after being positive for consecutive days. 
-
-    The signal strength is computed as:
-       signal_strength = DI (for buy signals) or -DI (for sell signals),
-    indicating the magnitude of the reversal.
-
+        DI = ((Close - MA) / MA) * 100,
+    where MA is the moving average of the close price over a specified lookback period 
+    (default is 14 days). Trading signals are generated based on the transition of DI:
+      - A buy signal (signal = 1) is generated when DI becomes positive after a series 
+        of consecutive negative DI values (default consecutive period is 4 days).
+      - A sell signal (signal = -1) is generated when DI becomes negative after a series 
+        of consecutive positive DI values (default consecutive period is 4 days).
+    The signal strength reflects the magnitude of the move:
+      - For a buy signal, signal_strength = DI.
+      - For a sell signal, signal_strength = -DI.
+    
     Risk Management:
     ----------------
-    In addition to determining entry signals, the strategy applies risk management rules:
-      - Entry prices are adjusted for slippage and transaction costs.
-      - Stop-loss and take-profit levels are defined as percentage moves from the entry price.
-      - Exit conditions are triggered by these levels or by a signal reversal.
-    Realized returns are calculated as:
-       For long: (exit_price / entry_price) - 1.
-       For short: (entry_price / exit_price) - 1.
-    Cumulative return aggregates trade multipliers over time, allowing downstream analysis
-    such as Sharpe ratio and maximum drawdown calculation.
+    The strategy integrates risk management via the RiskManager component. Upon a signal,
+    the RiskManager adjusts the entry price for slippage and transaction costs, sets stop-loss
+    and take-profit levels, and triggers exits (via stop_loss, take_profit, or signal reversal).
+    The realized return is computed as:
+      - For long trades: (exit_price / entry_price) - 1.
+      - For short trades: (entry_price / exit_price) - 1.
+    Cumulative returns are aggregated over time using the trade multipliers.
     
-    This implementation leverages vectorized computations for efficient backtesting and 
-    latest signal forecasting.
+    Inputs and Outputs:
+    --------------------
+    The strategy supports both backtesting and forecasting:
+      - Backtesting: Provide start_date and end_date to return the full history of trading signals.
+      - Forecasting: Set latest_only=True to return only the latest signal(s) for end-of-day decision making.
+
+    The final output DataFrame contains:
+      'open', 'high', 'low', 'close'    : Price references.
+      'di'                              : Computed Disparity Index.
+      'signal'                          : Trading signal (1 = buy, -1 = sell, 0 = hold/exit).
+      'signal_strength'                 : Magnitude of the signal.
+      'position'                        : Final position after risk management.
+      'return'                          : Realized trade return.
+      'cumulative_return'               : Aggregated return over trades.
+      'exit_type'                       : Indicator of the risk management exit event.
+
+    Parameters in `params` include:
+      - di_lookback (int): Lookback period for the moving average (default: 14).
+      - consecutive_period (int): Number of consecutive days required to trigger a signal reversal (default: 4).
+      - stop_loss_pct (float): Stop loss percentage (default: 0.05).
+      - take_profit_pct (float): Take profit percentage (default: 0.10).
+      - slippage_pct (float): Slippage percentage (default: 0.001).
+      - transaction_cost_pct (float): Transaction cost percentage (default: 0.001).
+      - long_only (bool): Flag to allow only long positions (default: True).
+
+    The strategy is designed to process a single ticker (str) or multiple tickers (List[str])
+    using efficient vectorized computations.
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the Disparity Index Strategy.
-
+        Initialize the Disparity Index Strategy with risk management parameters.
+        
         Args:
             db_config (DatabaseConfig): Database configuration settings.
-            params (Dict, optional): Parameters for the strategy. Expected keys include:
-                - di_lookback (int): Lookback period for the moving average (default 14).
-                - consecutive_period (int): Number of consecutive periods for signal reversal (default 4).
-                - stop_loss_pct (float): Stop loss percentage (default 0.05).
-                - take_profit_pct (float): Take profit percentage (default 0.10).
-                - slippage_pct (float): Estimated slippage percentage (default 0.001).
-                - transaction_cost_pct (float): Transaction cost percentage (default 0.001).
-                - 'long_only': Flag to allow only long positions (default: True)
+            params (Dict, optional): Strategy-specific parameters.
         """
         params = params or {}
         super().__init__(db_config, params)
@@ -69,80 +86,86 @@ class DisparityIndexStrategy(BaseStrategy):
         self.take_profit_pct = params.get('take_profit_pct', 0.10)
         self.slippage_pct = params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = params.get('transaction_cost_pct', 0.001)
-        self.long_only = self.params.get('long_only', True)
+        self.long_only = params.get('long_only', True)
         
-        # Initialize the risk manager instance with the provided risk parameters.
+        # Initialize RiskManager with provided risk parameters
         self.risk_manager = RiskManager(
             stop_loss_pct=self.stop_loss_pct,
             take_profit_pct=self.take_profit_pct,
             slippage_pct=self.slippage_pct,
             transaction_cost_pct=self.transaction_cost_pct
         )
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def generate_signals(self, 
-                         ticker: str,
+                         ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
         Generate trading signals with integrated risk management for backtesting or forecasting.
-
+        
+        Retrieves historical price data, computes the disparity index and trading signals,
+        then applies risk management rules to adjust trade entries and exits.
+        
         Args:
-            ticker (str): Stock ticker symbol.
-            start_date (str, optional): Start date for backtesting in YYYY-MM-DD format.
-            end_date (str, optional): End date for backtesting in YYYY-MM-DD format.
-            initial_position (int, optional): Starting position (0 for flat, 1 for long, -1 for short). Defaults to 0.
-            latest_only (bool, optional): If True, returns only the latest computed signal for forecasting. Defaults to False.
-
+            ticker (str or List[str]): Stock ticker symbol or list of symbols.
+            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+            initial_position (int): Initial trading position (0 = flat, 1 = long, -1 = short).
+            latest_only (bool): If True, returns only the latest signal(s) for forecasting.
+        
         Returns:
-            pd.DataFrame: DataFrame containing:
-                - Price data (open, high, low, close)
-                - Calculated indicators (di, signal, signal_strength)
-                - Risk-managed fields (position, return, cumulative_return, exit_type)
-                - These outputs enable further downstream analysis (e.g., Sharpe ratio, max drawdown).
+            pd.DataFrame: DataFrame containing price data, computed indicators, and risk-managed
+                          signals (position, returns, cumulative returns, exit types) suitable for
+                          downstream analysis.
         """
-        # Calculate the required number of historical records to ensure sufficient lookback.
+        # Determine the required number of historical records
         required_lookback = self.di_lookback + self.consecutive_period + 1
         
-        # Retrieve historical price data using dates or lookback count based on the mode.
+        # Retrieve historical price data for the ticker(s)
         prices_df = self._get_price_data(ticker, start_date, end_date, required_lookback, latest_only)
         
-        # Calculate indicators: disparity index, signals, and signal strength.
+        # Calculate the disparity index, trading signals, and signal strength based on close prices
         di, signals, signal_strength = self._calculate_indicators(prices_df['close'])
         
-        # Create a combined DataFrame with prices and computed indicators.
+        # Create a unified DataFrame with price data and computed indicators
         signals_df = self._create_signals_df(prices_df, di, signals, signal_strength)
         
-        # Apply risk management rules to compute positions and returns.
+        # Apply risk management to compute final trading positions, returns, and exit types
         return self._apply_risk_management(signals_df, initial_position, latest_only)
 
-    def _get_price_data(self, ticker: str, 
+    def _get_price_data(self, 
+                        ticker: Union[str, List[str]], 
                         start_date: Optional[str], 
                         end_date: Optional[str],
                         required_lookback: int,
                         latest_only: bool) -> pd.DataFrame:
         """
         Retrieve historical price data from the database.
-
+        
+        Depending on whether forecasting (latest_only) or backtesting is intended,
+        fetches a minimum number of recent records or data within a date range.
+        
         Args:
-            ticker (str): Stock ticker symbol.
-            start_date (str): Backtest start date in YYYY-MM-DD format. (Ignored if latest_only=True)
-            end_date (str): Backtest end date in YYYY-MM-DD format. (Ignored if latest_only=True)
-            required_lookback (int): Minimum number of records required.
-            latest_only (bool): If True, retrieves only the most recent records according to the required lookback.
-
+            ticker (str or List[str]): Stock ticker symbol(s).
+            start_date (str): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str): Backtest end date in 'YYYY-MM-DD' format.
+            required_lookback (int): Minimal number of historical records required.
+            latest_only (bool): If True, retrieve only the latest records.
+        
         Returns:
-            pd.DataFrame: DataFrame containing price data (open, high, low, close) with a datetime index.
-
+            pd.DataFrame: DataFrame with columns ['open', 'high', 'low', 'close'] and a datetime index.
+            
         Raises:
-            DataRetrievalError: If the available data is insufficient for analysis.
+            DataRetrievalError: If insufficient data is available to meet the requirements.
         """
         if latest_only:
             prices_df = self.get_historical_prices(ticker, lookback=required_lookback)
         else:
             prices_df = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
-
+        
         if not self._validate_data(prices_df, min_records=required_lookback):
             raise DataRetrievalError(f"Insufficient data for {ticker}")
             
@@ -150,62 +173,86 @@ class DisparityIndexStrategy(BaseStrategy):
 
     def _calculate_indicators(self, close_prices: pd.Series) -> tuple:
         """
-        Compute the Disparity Index and generate trading signals with signal strength.
-
-        The calculations include:
-            - Moving average (MA) computed over a window (di_lookback).
-            - Disparity Index: DI = ((Close - MA) / MA) * 100.
-            - Determination of buy/sell signals:
-                * Buy signal (1): when DI turns positive after being negative for 'consecutive_period' days.
-                * Sell signal (-1): when DI turns negative after being positive for 'consecutive_period' days.
-            - Signal strength is defined as DI for buys and -DI for sells.
-
+        Compute the Disparity Index and generate trading signals along with signal strength.
+        
+        For a single ticker, the calculations are performed directly on the closing price series.
+        For multiple tickers (using a MultiIndex), the computations are applied group-wise on each ticker.
+        
+        The Disparity Index (DI) is computed as:
+            DI = ((Close - MA) / MA) * 100,
+        where MA is the moving average determined by 'di_lookback'.
+        
+        Trading signals are generated in the following manner:
+            - Buy signal (1): Triggered when DI turns positive after being negative for
+              'consecutive_period' days.
+            - Sell signal (-1): Triggered when DI turns negative after being positive for
+              'consecutive_period' days.
+            - In long-only mode, sell signals are converted to 0.
+        
+        Signal strength reflects the magnitude of the move:
+            - For buy signals, equals DI.
+            - For sell signals, equals -DI.
+        
         Args:
             close_prices (pd.Series): Series of closing prices.
-
+            
         Returns:
-            tuple: (di, signals, signal_strength) where each is a pd.Series.
+            tuple: Three pd.Series representing the disparity index (di), trading signals,
+                   and signal strength (all aligned to close_prices’ index).
         """
-        # Compute the moving average.
-        ma = close_prices.rolling(self.di_lookback, min_periods=self.di_lookback).mean()
-        # Calculate the Disparity Index.
-        di = ((close_prices - ma) / ma) * 100
+        def calc_indicators(series: pd.Series) -> pd.DataFrame:
+            ma = series.rolling(self.di_lookback, min_periods=self.di_lookback).mean()
+            di_local = ((series - ma) / ma) * 100
+            shifted_di = di_local.shift(1)
+            negative_mask = (shifted_di < 0).rolling(self.consecutive_period).sum() == self.consecutive_period
+            positive_mask = (shifted_di > 0).rolling(self.consecutive_period).sum() == self.consecutive_period
+            # Generate signals: 1 for a buy (when DI turns positive following consecutive negatives),
+            # -1 for a sell (when DI turns negative following consecutive positives), 0 otherwise.
+            signals_local = np.where(negative_mask & (di_local > 0), 1,
+                                     np.where(positive_mask & (di_local < 0), -1, 0))
+            # Signal strength: equals DI for buy and -DI for sell.
+            signal_strength_local = np.where(signals_local == 1, di_local, 
+                                             np.where(signals_local == -1, -di_local, 0.0))
+            if self.long_only:
+                signals_local[signals_local == -1] = 0
+            return pd.DataFrame({'di': di_local,
+                                 'signal': signals_local,
+                                 'signal_strength': signal_strength_local}, index=series.index)
         
-        # Use the previous period's DI for signal triggering.
-        shifted_di = di.shift(1)
-        # Create masks for consecutive negative or positive DI values.
-        negative_mask = (shifted_di < 0).rolling(self.consecutive_period).sum() == self.consecutive_period
-        positive_mask = (shifted_di > 0).rolling(self.consecutive_period).sum() == self.consecutive_period
-        
-        # Generate signals: 1 for a buy, -1 for a sell, 0 otherwise.
-        signals = np.where(negative_mask & (di > 0), 1, 
-                          np.where(positive_mask & (di < 0), -1, 0))
-        
-        # Establish signal strength: For a buy, strength equals DI; for a sell, the strength is -DI.
-        signal_strength = np.where(signals == 1, di, 
-                                  np.where(signals == -1, -di, 0.0))
-        
-        if self.long_only:
-            # Replace sell signals (-1) with 0 (exit)
-            signals[signals == -1] = 0
-        
-        return di, pd.Series(signals, index=di.index), pd.Series(signal_strength, index=di.index)
+        # If multi-ticker data is provided (MultiIndex), apply group-wise computations.
+        if isinstance(close_prices.index, pd.MultiIndex):
+            indicators = close_prices.groupby(level=0, group_keys=False).apply(lambda x: calc_indicators(x))
+            di = indicators['di']
+            signals = indicators['signal']
+            signal_strength = indicators['signal_strength']
+        else:
+            df_ind = calc_indicators(close_prices)
+            di = df_ind['di']
+            signals = df_ind['signal']
+            signal_strength = df_ind['signal_strength']
+            
+        return di, signals, signal_strength
 
-    def _create_signals_df(self, prices_df: pd.DataFrame,
-                             di: pd.Series, 
-                             signals: pd.Series,
-                             signal_strength: pd.Series) -> pd.DataFrame:
+    def _create_signals_df(self, 
+                           prices_df: pd.DataFrame,
+                           di: pd.Series, 
+                           signals: pd.Series,
+                           signal_strength: pd.Series) -> pd.DataFrame:
         """
-        Create a consolidated DataFrame merging price information with computed indicators.
-
+        Create a consolidated DataFrame merging price data with computed indicators.
+        
+        Combines the price DataFrame (with columns 'open', 'high', 'low', 'close') with
+        the disparity index, trading signals, and signal strength. Only rows with valid DI values
+        are retained.
+        
         Args:
-            prices_df (pd.DataFrame): DataFrame with columns ['open', 'high', 'low', 'close'].
-            di (pd.Series): Series containing the Disparity Index values.
-            signals (pd.Series): Series containing the generated signals.
-            signal_strength (pd.Series): Series with the magnitude of the signals.
-
+            prices_df (pd.DataFrame): DataFrame containing price data.
+            di (pd.Series): Series with computed disparity index.
+            signals (pd.Series): Series with generated trading signals.
+            signal_strength (pd.Series): Series with signal strength values.
+        
         Returns:
-            pd.DataFrame: Consolidated DataFrame with the combined data and non-null DI rows.
+            pd.DataFrame: Consolidated DataFrame with columns for prices and all computed indicators.
         """
         combined_df = pd.concat([
             prices_df[['open', 'high', 'low', 'close']],
@@ -220,27 +267,30 @@ class DisparityIndexStrategy(BaseStrategy):
                                initial_position: int,
                                latest_only: bool) -> pd.DataFrame:
         """
-        Apply risk management to the raw trading signals to yield final positions, returns, and exit types.
-
-        This method adjusts trade entries and exits based on risk parameters (stop loss, take profit,
-        slippage, and transaction costs) by invoking the RiskManager. The output is then merged with the
-        strategy indicators.
-
-        Args:
-            signals_df (pd.DataFrame): DataFrame with price and indicator data.
-            initial_position (int): Starting position (0 for flat, 1 for long, -1 for short).
-            latest_only (bool): If True, returns only the latest row (for EOD decision-making).
-
-        Returns:
-            pd.DataFrame: DataFrame with columns:
-                        ['close', 'high', 'low', 'signal', 'position', 'return',
-                         'cumulative_return', 'exit_type', 'di', 'signal_strength', 'open'].
-        """
-        # Apply risk management to compute trade management metrics.
-        managed_df = self.risk_manager.apply(
-            signals_df,
-            initial_position=initial_position
-        )
+        Apply risk management to adjust trading signals into final positions, returns, and exit events.
         
-        # For forecasting, return only the latest record; otherwise, return the full backtest DataFrame.
-        return managed_df.tail(1) if latest_only else managed_df
+        This method calls the RiskManager's 'apply' function to adjust entries/exits using
+        predetermined stop loss, take profit, slippage, and transaction cost parameters. For multi-ticker
+        data, the risk management process is performed independently per ticker.
+        
+        Args:
+            signals_df (pd.DataFrame): DataFrame with price data and raw trading signals.
+            initial_position (int): The starting trading position (0 for flat, 1 for long, -1 for short).
+            latest_only (bool): If True, returns only the latest record per ticker for forecasting.
+            
+        Returns:
+            pd.DataFrame: DataFrame with price data, indicators, and risk-managed fields including:
+                'position', 'return', 'cumulative_return', and 'exit_type'.
+        """
+        if isinstance(signals_df.index, pd.MultiIndex):
+            managed_df = signals_df.groupby(level=0, group_keys=False).apply(
+                lambda group: self.risk_manager.apply(group, initial_position=initial_position)
+            )
+            if latest_only:
+                managed_df = managed_df.groupby(level=0, group_keys=False).tail(1)
+        else:
+            managed_df = self.risk_manager.apply(signals_df, initial_position=initial_position)
+            if latest_only:
+                managed_df = managed_df.tail(1)
+        
+        return managed_df
