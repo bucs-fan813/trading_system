@@ -1,4 +1,4 @@
-# trading_system/src/strategies/keltner_channel.py
+# trading_system/src/strategies/volatility/keltner_channel.py
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
@@ -6,64 +6,55 @@ from src.database.config import DatabaseConfig
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, List
 from datetime import timedelta
 
 class KeltnerChannelStrategy(BaseStrategy):
     """
-    Keltner Channel Strategy generates trading signals based on the Keltner Channel indicator.
+    Keltner Channel Strategy with Integrated Risk Management Component.
     
-    Mathematical Overview:
-        - Computes the exponential moving average (EMA) of the closing price to form the channel middle (kc_middle):
-              EMA(t) = α * P(t) + (1 - α) * EMA(t-1), where α = 2/(span+1)
-        - Calculates the True Range (TR) as:
-              TR = max(high - low, |high - prev_close|, |low - prev_close|)
-        - Computes the Average True Range (ATR) (using an EMA over a period 'atr_span'):
-              ATR = EMA(TR)
-        - Determines channel boundaries:
-              kc_upper = kc_middle + multiplier * ATR
-              kc_lower = kc_middle - multiplier * ATR
-        - Signal Generation:
-            • Buy signal (+1) is generated when the close is below kc_lower and shows upward momentum (close > previous close).
-            • Sell signal (-1) is generated when the close is above kc_upper and shows downward momentum (close < previous close).
-        - Signal Strength:
-            • For a buy signal: (kc_lower – close) / ATR (the further below the lower band, the stronger the oversold signal).
-            • For a sell signal: (close – kc_upper) / ATR (the further above the upper band, the stronger the overbought signal).
-    
-    Risk Management:
-        The strategy then applies risk management via the RiskManager class, which adjusts the entry prices for slippage 
-        and transaction costs and applies stop loss and take profit rules. This produces a final backtesting DataFrame 
-        that includes positions, realized returns, cumulative returns, and the exit type.
-    
-    Strategy Flow:
-        1. Data Retrieval: Fetches historical price data with an optimal lookback period.
-        2. Indicator Calculation: Computes EMA, ATR, and Keltner Channel boundaries using vectorized operations.
-        3. Signal Generation: Determines trading signals and a normalized signal_strength.
-        4. Risk Management: Adjusts trading signals by applying stop-loss, take-profit, slippage, and transaction cost rules.
-        5. Output: Returns a comprehensive DataFrame that can be used for further performance analysis (e.g., Sharpe ratio, drawdowns)
-           and for generating the latest EOD signal.
-    
-    Parameters:
-        db_config (DatabaseConfig): Database configuration settings.
-        params (dict, optional): Strategy-specific hyperparameters.
+    This strategy generates trading signals based on the Keltner Channel indicator.
+    It computes an exponential moving average (EMA) of the closing price as the channel middle,
+    calculates the Average True Range (ATR) using an EMA of the true range, and defines the upper
+    and lower channel boundaries as:
+        kc_upper = kc_middle + multiplier * ATR
+        kc_lower = kc_middle - multiplier * ATR
         
-    Hyperparameters in `params`:
-        - kc_span (int): EMA period for channel middle (default: 20)
-        - atr_span (int): Period for ATR calculation (default: 10)
-        - multiplier (float): Factor to scale the ATR for channel boundaries (default: 2.0)
-        - long_only (bool): If True, generate long-only signals (default: True)
-        - stop_loss (float): Stop loss percentage (default: 0.05)
-        - take_profit (float): Take profit percentage (default: 0.10)
-        - slippage (float): Slippage percentage (default: 0.001)
-        - transaction_cost (float): Transaction cost percentage (default: 0.001)
+    True Range (TR) is defined as:
+        TR = max(high - low, |high - previous close|, |low - previous close|)
+        
+    Trading signals are generated based on the following rules:
+        • Buy Signal (1): Triggered when the close is below kc_lower and shows upward momentum (close > previous close).
+        • Sell Signal (-1): Triggered when the close is above kc_upper and shows downward momentum (close < previous close).
+          For long-only strategies, sell signals are replaced with an exit (0).
+          
+    Signal strength is quantified as:
+        • For a buy signal: (kc_lower - close) / ATR.
+        • For a sell signal: (close - kc_upper) / ATR.
+        
+    The raw signals are further risk-managed via the RiskManager, which applies stop-loss, 
+    take-profit, slippage, and transaction cost adjustments. The final output is a comprehensive
+    DataFrame that includes price data, technical indicators, raw signals, risk-managed positions,
+    trade returns, and cumulative returns. This output can be used for full backtesting as well as
+    for obtaining the latest end-of-day trading signal.
+    
+    This strategy supports both single and multi-ticker analyses through vectorized operations.
+    
+    Args:
+        db_config (DatabaseConfig): Database configuration settings.
+        params (dict, optional): Strategy-specific hyperparameters. Supported parameters (with defaults):
+            - kc_span (int): Period for EMA channel middle (default: 20).
+            - atr_span (int): Period for ATR calculation (default: 10).
+            - multiplier (float): Multiplier for scaling ATR to define channel boundaries (default: 2.0).
+            - long_only (bool): If True, only long positions are allowed (default: True).
+            - stop_loss (float): Stop loss percentage (default: 0.05).
+            - take_profit (float): Take profit percentage (default: 0.10).
+            - slippage (float): Slippage percentage (default: 0.001).
+            - transaction_cost (float): Transaction cost percentage (default: 0.001).
     """
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the Keltner Channel Strategy with the given database configuration and strategy parameters.
-        
-        Args:
-            db_config (DatabaseConfig): The database configuration object.
-            params (dict, optional): A dictionary of strategy-specific hyperparameters.
+        Initialize the Keltner Channel Strategy with database configuration and parameters.
         """
         super().__init__(db_config, params)
         self._validate_params()
@@ -71,10 +62,10 @@ class KeltnerChannelStrategy(BaseStrategy):
 
     def _validate_params(self):
         """
-        Validate strategy parameters and set default values as needed.
+        Validate and set default strategy parameters.
         
         Raises:
-            ValueError: If any non-risk parameter is non-positive or if risk parameters are negative.
+            ValueError: If any parameter (except risk percentages) is non-positive.
         """
         self.params.setdefault('kc_span', 20)
         self.params.setdefault('atr_span', 10)
@@ -85,17 +76,19 @@ class KeltnerChannelStrategy(BaseStrategy):
         self.params.setdefault('transaction_cost', 0.001)
         self.params.setdefault('long_only', True)
 
-        if any(v <= 0 for k, v in self.params.items() if k not in ['stop_loss', 'take_profit']):
-            raise ValueError("All strategy parameters must be positive")
+        # Ensure non-risk parameters are positive
+        for k, v in self.params.items():
+            if k not in ['stop_loss', 'take_profit'] and v <= 0:
+                raise ValueError(f"Parameter {k} must be positive")
         if self.params['stop_loss'] < 0 or self.params['take_profit'] < 0:
             raise ValueError("Risk parameters cannot be negative")
 
-    def _init_risk_manager(self):
+    def _init_risk_manager(self) -> RiskManager:
         """
-        Initialize the RiskManager instance configured with strategy-specific risk parameters.
+        Initialize the RiskManager with strategy risk parameters.
         
         Returns:
-            RiskManager: A risk manager instance for handling stop loss, take profit, slippage, and transaction costs.
+            RiskManager: Instance for managing trade risk.
         """
         return RiskManager(
             stop_loss_pct=self.params['stop_loss'],
@@ -104,222 +97,256 @@ class KeltnerChannelStrategy(BaseStrategy):
             transaction_cost_pct=self.params['transaction_cost']
         )
 
-    def generate_signals(self, ticker: str, 
+    def generate_signals(self, tickers: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
-        Generate trading signals with integrated risk management.
+        Generate trading signals with risk management adjustments.
         
-        The method retrieves historical prices, computes technical indicators and channel boundaries,
-        generates raw buy/sell signals (with associated normalized signal strength), applies risk management
-        adjustments to factor in slippage and transaction costs, and finally formats the data for backtesting
-        or for returning the latest signal.
+        The method retrieves historical price data for one or multiple tickers, computes the Keltner Channel
+        components (EMA of close, ATR, upper and lower channels), and generates raw trading signals. It then
+        applies risk management rules to adjust trade entries for slippage, transaction costs, stop loss, 
+        and take profit.
+        
+        Depending on the parameters, it returns a DataFrame suitable for backtesting over a specified date range,
+        including price data, technical indicators, raw signals, and risk-managed trading metrics. It also
+        supports retrieving only the latest signal for end-of-day trading decisions.
         
         Args:
-            ticker (str): Stock ticker.
-            start_date (str, optional): Start date (YYYY-MM-DD) for backtesting.
-            end_date (str, optional): End date (YYYY-MM-DD) for backtesting.
-            initial_position (int): The starting position (0 for no position, 1 for long, -1 for short).
-            latest_only (bool): If True, only the latest signal (end-of-day) record is returned.
+            tickers (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+            initial_position (int): Starting trading position (0 for no position, 1 for long, -1 for short).
+            latest_only (bool): If True, returns only the most recent record per ticker.
             
         Returns:
-            pd.DataFrame: DataFrame containing price data, technical indicators, raw and risk-managed signals,
-                          along with positions, returns, cumulative returns, and exit event indicators.
+            pd.DataFrame: DataFrame containing price data, Keltner Channel indicators, raw and risk-managed signals,
+                          positions, realized returns, cumulative returns, and risk management exit indicators.
                           
         Raises:
-            DataRetrievalError: If an error occurs during signal generation.
+            DataRetrievalError: If data retrieval or signal generation fails.
         """
-        self.logger.info(f"Processing {ticker} with {self.params}")
+        self.logger.info(f"Processing tickers: {tickers} with parameters: {self.params}")
 
-        # Determine the extra lookback required for stable indicator calculation.
+        # Determine extra lookback period for stable indicator calculation.
         max_lookback = max(self.params['kc_span'], self.params['atr_span'])
         required_bars = max_lookback * 2  # Buffer period
-        
+
         try:
-            prices = self._fetch_data(ticker, start_date, end_date, required_bars, latest_only)
-            if prices.empty:
+            data = self._fetch_data(tickers, start_date, end_date, required_bars, latest_only)
+            if data.empty:
                 return pd.DataFrame()
 
-            # Compute the technical indicators and raw signals in a vectorized manner.
-            signals = self._calculate_components(prices)
-            
-            # Apply risk management adjustments to the generated signals.
+            # Compute technical indicators and raw signals in a vectorized manner.
+            signals = self._calculate_components(data)
+
+            # Apply risk management adjustments.
             risk_managed = self.risk_manager.apply(signals, initial_position)
-            
-            # Merge the original price data, technical components, and risk-managed trade metrics.
-            full_df = self._format_output(prices, signals, risk_managed)
-            
-            # Filter the final result based on the provided date range or extract just the latest record.
+
+            # Consolidate price data, technical components, and risk-managed trade metrics.
+            full_df = self._format_output(data, signals, risk_managed)
+
+            # Final filtering: apply date filters and, if requested, return only the most recent signal.
             return self._filter_results(full_df, start_date, end_date, latest_only)
 
         except Exception as e:
             self.logger.error(f"Signal generation failed: {str(e)}")
-            raise DataRetrievalError(f"Failed processing {ticker}") from e
+            raise DataRetrievalError(f"Failed processing tickers: {tickers}") from e
 
-    def _fetch_data(self, ticker: str, start_date: str, end_date: str, 
-                    lookback: int, latest_only: bool) -> pd.DataFrame:
+    def _fetch_data(self, tickers: Union[str, List[str]],
+                    start_date: Optional[str],
+                    end_date: Optional[str],
+                    lookback: int,
+                    latest_only: bool) -> pd.DataFrame:
         """
-        Retrieve historical price data using an optimized lookback window for indicator stability.
+        Retrieve historical price data with an extended lookback period for stable indicator calculations.
         
-        If 'latest_only' is True, a fixed number of recent records is fetched;
-        Otherwise, the start date is extended backward by 'lookback' days to ensure stable indicator calculations.
+        If latest_only is True, retrieves only a fixed number of the most recent records. Otherwise, the start date
+        is extended backwards by the lookback period.
         
         Args:
-            ticker (str): Stock ticker.
-            start_date (str): Backtesting start date (YYYY-MM-DD).
-            end_date (str): Backtesting end date (YYYY-MM-DD).
-            lookback (int): Number of extra bars to include for indicator calculation.
-            latest_only (bool): If True, fetch only the latest records.
+            tickers (str or List[str]): Single or multiple ticker symbols.
+            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+            lookback (int): Number of extra bars to use for stable indicator computation.
+            latest_only (bool): If True, fetch only the most recent records.
             
         Returns:
-            pd.DataFrame: Historical price data obtained from the database.
+            pd.DataFrame: DataFrame containing historical price data.
         """
         if latest_only:
-            return self.get_historical_prices(ticker, lookback=lookback)
+            return self.get_historical_prices(tickers, lookback=lookback)
 
         if start_date and end_date:
             adjusted_start = (pd.to_datetime(start_date) - timedelta(days=lookback)).strftime('%Y-%m-%d')
-            return self.get_historical_prices(ticker, from_date=adjusted_start, to_date=end_date)
+            return self.get_historical_prices(tickers, from_date=adjusted_start, to_date=end_date)
         
-        return self.get_historical_prices(ticker, lookback=lookback)
+        return self.get_historical_prices(tickers, lookback=lookback)
 
     def _calculate_components(self, prices: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute technical indicators including True Range, ATR, and Keltner Channel boundaries.
+        Compute Keltner Channel components and raw signals using vectorized operations.
         
-        The True Range (TR) is calculated as:
-            TR = max(high - low, |high - previous close|, |low - previous close|)
-        An exponential moving average (EMA) of TR over 'atr_span' produces the ATR,
-        and an EMA of the closing price over 'kc_span' gives the channel middle (kc_middle).
-        The upper and lower channels are defined by adding/subtracting (multiplier * ATR) to/from kc_middle.
-        Raw trading signals are then generated based on whether the price is below the lower channel (buy)
-        or above the upper channel (sell). Signal strength is a normalized measure of the deviation.
-        
+        For each ticker (if multiple tickers are provided) the following are calculated:
+          - True Range (TR): max(high - low, |high - previous close|, |low - previous close|)
+          - Average True Range (ATR): Exponential moving average (EMA) of TR over the specified period.
+          - Channel middle (kc_middle): EMA of the close prices over the specified period.
+          - Upper and lower channel boundaries:
+                kc_upper = kc_middle + multiplier * ATR
+                kc_lower = kc_middle - multiplier * ATR
+          - Trading signals:
+                • Buy (1): When close < kc_lower and there is upward momentum (close > previous close).
+                • Sell (-1): When close > kc_upper and there is downward momentum (close < previous close).
+          - Signal strength:
+                • For a buy signal: (kc_lower - close) / ATR.
+                • For a sell signal: (close - kc_upper) / ATR.
+                
         Args:
-            prices (pd.DataFrame): Historical price data containing 'close', 'high', and 'low' columns.
-            
+            prices (pd.DataFrame): DataFrame containing 'close', 'high', and 'low' columns. For multiple tickers,
+                                   the index is expected to be a MultiIndex with levels ['ticker', 'date'].
+                                   
         Returns:
-            pd.DataFrame: DataFrame containing the computed technical indicators and raw signals.
+            pd.DataFrame: DataFrame with technical indicators (kc_middle, kc_upper, kc_lower),
+                          raw trading signals ('signal') and corresponding normalized 'signal_strength'.
         """
-        close = prices['close']
-        high = prices['high']
-        low = prices['low']
+        df = prices.copy()
         
-        # Calculate True Range (TR)
-        tr = pd.concat([
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs()
-        ], axis=1).max(axis=1)
-        
-        # Compute ATR as the exponential moving average of TR
-        atr = tr.ewm(span=self.params['atr_span'], adjust=False).mean()
-        
-        # EMA of close forms the channel middle (kc_middle)
-        kc_middle = close.ewm(span=self.params['kc_span'], adjust=False).mean()
-        
-        # Define channel boundaries using the multiplier and ATR
-        kc_upper = kc_middle + self.params['multiplier'] * atr
-        kc_lower = kc_middle - self.params['multiplier'] * atr
-        
-        # Generate signals: Buy (+1) if below lower band (and trending upward),
-        # and Sell (-1) if above upper band (and trending downward).
-        buy_cond = (close < kc_lower) & (close > close.shift())
-        sell_cond = (close > kc_upper) & (close < close.shift())
-        
-        signals = pd.DataFrame({
-            'high': high,
-            'low': low,
-            'close': close,
-            'signal': np.select([buy_cond, sell_cond], [1, -1], 0),
-            # Calculate signal strength as a positive normalized distance from the channel boundary.
-            'signal_strength': self._calculate_strength(close, kc_upper, kc_lower, atr),
-            'kc_middle': kc_middle,
-            'kc_upper': kc_upper,
-            'kc_lower': kc_lower
-        }, index=prices.index)
-
-        if self.long_only:
-            # Override sell signals (-1) with 0 (exit)
-            signals.loc[sell_cond, 'signal'] = 0
-        
-        return signals.dropna()
-
-    def _calculate_strength(self, close: pd.Series, upper: pd.Series,
-                              lower: pd.Series, atr: pd.Series) -> pd.Series:
-        """
-        Calculate normalized signal strength as a measure of the distance from the channel boundary.
-        
-        For a buy signal (price below kc_lower), the strength is computed as:
-              (kc_lower - close) / ATR
-        For a sell signal (price above kc_upper), it is computed as:
-              (close - kc_upper) / ATR
-        The values are positive and indicate the intensity of the signal.
-        
-        Args:
-            close (pd.Series): Series of closing prices.
-            upper (pd.Series): Upper channel boundary (kc_upper).
-            lower (pd.Series): Lower channel boundary (kc_lower).
-            atr (pd.Series): Average True Range.
+        # Process multi-ticker data if index is a MultiIndex containing 'ticker'
+        if isinstance(df.index, pd.MultiIndex) and 'ticker' in df.index.names:
+            # Compute previous close per ticker.
+            df['prev_close'] = df.groupby(level='ticker')['close'].shift(1)
+            # Calculate True Range (TR)
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['prev_close']).abs()
+            tr3 = (df['low'] - df['prev_close']).abs()
+            df['tr'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             
-        Returns:
-            pd.Series: Normalized signal strengths.
-        """
-        long_strength = (lower - close) / atr
-        short_strength = (close - upper) / atr
-        return np.where(close < lower, long_strength, np.where(close > upper, short_strength, 0))
+            # Compute ATR and channel middle using group-wise exponential moving averages.
+            df['atr'] = df.groupby(level='ticker')['tr'].transform(lambda x: x.ewm(span=self.params['atr_span'], adjust=False).mean())
+            df['kc_middle'] = df.groupby(level='ticker')['close'].transform(lambda x: x.ewm(span=self.params['kc_span'], adjust=False).mean())
+            
+            # Determine the channel boundaries.
+            df['kc_upper'] = df['kc_middle'] + self.params['multiplier'] * df['atr']
+            df['kc_lower'] = df['kc_middle'] - self.params['multiplier'] * df['atr']
+            
+            # Calculate buy and sell conditions using the ticker-specific previous close.
+            prev_close = df.groupby(level='ticker')['close'].shift(1)
+            buy_cond = (df['close'] < df['kc_lower']) & (df['close'] > prev_close)
+            sell_cond = (df['close'] > df['kc_upper']) & (df['close'] < prev_close)
+            
+            df['signal'] = np.select([buy_cond, sell_cond], [1, -1], 0)
+            long_strength = (df['kc_lower'] - df['close']) / df['atr']
+            short_strength = (df['close'] - df['kc_upper']) / df['atr']
+            df['signal_strength'] = np.where(df['close'] < df['kc_lower'], long_strength,
+                                             np.where(df['close'] > df['kc_upper'], short_strength, 0))
+                                             
+            # Remove temporary columns.
+            df.drop(columns=['prev_close', 'tr'], inplace=True)
+            
+            # For long-only strategies, override sell signals.
+            if self.params.get('long_only', True):
+                df.loc[sell_cond, 'signal'] = 0
+                
+            return df
+        else:
+            # Single ticker processing.
+            df['prev_close'] = df['close'].shift(1)
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['prev_close']).abs()
+            tr3 = (df['low'] - df['prev_close']).abs()
+            df['tr'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            df['atr'] = df['tr'].ewm(span=self.params['atr_span'], adjust=False).mean()
+            df['kc_middle'] = df['close'].ewm(span=self.params['kc_span'], adjust=False).mean()
+            df['kc_upper'] = df['kc_middle'] + self.params['multiplier'] * df['atr']
+            df['kc_lower'] = df['kc_middle'] - self.params['multiplier'] * df['atr']
+            
+            prev_close = df['close'].shift(1)
+            buy_cond = (df['close'] < df['kc_lower']) & (df['close'] > prev_close)
+            sell_cond = (df['close'] > df['kc_upper']) & (df['close'] < prev_close)
+            
+            df['signal'] = np.select([buy_cond, sell_cond], [1, -1], 0)
+            long_strength = (df['kc_lower'] - df['close']) / df['atr']
+            short_strength = (df['close'] - df['kc_upper']) / df['atr']
+            df['signal_strength'] = np.where(df['close'] < df['kc_lower'], long_strength,
+                                             np.where(df['close'] > df['kc_upper'], short_strength, 0))
+                                              
+            df.drop(columns=['prev_close', 'tr'], inplace=True)
+            if self.params.get('long_only', True):
+                df.loc[sell_cond, 'signal'] = 0
+                
+            return df
 
     def _format_output(self, prices: pd.DataFrame, signals: pd.DataFrame,
                        risk_managed: pd.DataFrame) -> pd.DataFrame:
         """
-        Consolidate and format output by merging raw price data, technical indicators,
-        and risk-managed trading outcomes.
+        Merge and format the outputs from price data, technical indicator computations, and risk management.
+        
+        The consolidated DataFrame includes:
+          - Price references (open, high, low, close).
+          - Keltner Channel indicators (kc_middle, kc_upper, kc_lower) and raw signals with normalized signal strength.
+          - Risk-managed trade metrics (position, return, cumulative_return, exit_type).
+        
+        Any missing data is forward-filled and then dropped to produce a continuous output suitable
+        for backtesting and further performance analysis.
         
         Args:
             prices (pd.DataFrame): Original historical price data.
-            signals (pd.DataFrame): Technical indicators and raw signals DataFrame.
-            risk_managed (pd.DataFrame): DataFrame with positions, returns, and risk management data.
+            signals (pd.DataFrame): DataFrame with computed technical indicators and raw signals.
+            risk_managed (pd.DataFrame): DataFrame with risk-managed trading metrics.
             
         Returns:
-            pd.DataFrame: A complete DataFrame ready for backtesting or further analysis.
+            pd.DataFrame: Final consolidated DataFrame.
         """
-        return pd.concat([
+        combined = pd.concat([
             prices[['open', 'high', 'low', 'close']],
             signals[['kc_middle', 'kc_upper', 'kc_lower', 'signal', 'signal_strength']],
             risk_managed[['position', 'return', 'cumulative_return', 'exit_type']]
-        ], axis=1).ffill().dropna()
+        ], axis=1)
+        return combined.ffill().dropna()
 
-    def _filter_results(self, df: pd.DataFrame, start_date: str, end_date: str,
-                        latest_only: bool) -> pd.DataFrame:
+    def _filter_results(self, df: pd.DataFrame, start_date: Optional[str],
+                        end_date: Optional[str], latest_only: bool) -> pd.DataFrame:
         """
-        Apply final date filtering and formatting to the output DataFrame.
+        Apply date filtering and (optionally) return only the latest record per ticker.
+        
+        For multi-ticker data (with a MultiIndex that includes 'date'), the filtering is applied
+        on the 'date' level.
         
         Args:
-            df (pd.DataFrame): The merged DataFrame with backtesting data.
-            start_date (str): Start date (YYYY-MM-DD) for filtering.
-            end_date (str): End date (YYYY-MM-DD) for filtering.
-            latest_only (bool): If True, return only the last record (for end-of-day trading).
+            df (pd.DataFrame): Merged DataFrame of backtesting results.
+            start_date (str, optional): Start date (YYYY-MM-DD) for filtering.
+            end_date (str, optional): End date (YYYY-MM-DD) for filtering.
+            latest_only (bool): If True, return only the final record per ticker.
             
         Returns:
-            pd.DataFrame: Filtered and chronologically sorted DataFrame.
+            pd.DataFrame: Filtered DataFrame sorted chronologically.
         """
         if start_date and end_date:
-            mask = (df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))
+            start = pd.to_datetime(start_date)
+            end = pd.to_datetime(end_date)
+            if isinstance(df.index, pd.MultiIndex) and 'date' in df.index.names:
+                mask = (df.index.get_level_values('date') >= start) & (df.index.get_level_values('date') <= end)
+            else:
+                mask = (df.index >= start) & (df.index <= end)
             df = df.loc[mask]
             
         if latest_only:
-            return df.tail(1)
+            if isinstance(df.index, pd.MultiIndex) and 'ticker' in df.index.names:
+                return df.groupby(level='ticker', group_keys=False).tail(1)
+            else:
+                return df.tail(1)
             
         return df.sort_index()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
-        Return a string representation of the KeltnerChannelStrategy instance showcasing key parameters.
+        Return a string representation of the KeltnerChannelStrategy instance with key parameters.
         
         Returns:
-            str: A summary of the Keltner Channel Strategy configuration.
+            str: Summary string of the strategy configuration.
         """
-        return (f"KeltnerChannelStrategy(ema={self.params['kc_span']}, "
-                f"atr={self.params['atr_span']}, mult={self.params['multiplier']})")
+        return (f"KeltnerChannelStrategy(kc_span={self.params['kc_span']}, "
+                f"atr_span={self.params['atr_span']}, multiplier={self.params['multiplier']})")

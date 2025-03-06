@@ -1,40 +1,65 @@
-# trading_system/src/strategies/bollinger_bands_strat.py
+# trading_system/src/strategies/volatility/bollinger_bands_strat.py
 
 """
-Bollinger Bands Strategy
+Bollinger Bands Strategy with Integrated Risk Management Component.
 
-This module implements a Bollinger Bands strategy that uses a mean-reversion logic
-combined with risk management. It retrieves historical price data from the database,
-computes a rolling simple moving average (SMA) and standard deviation over a defined window,
-and derives upper and lower Bollinger Bands.
+This strategy implements a mean-reversion trading strategy using Bollinger Bands.
+For each ticker the following steps are performed in a fully vectorized fashion:
 
-Indicator calculations:
-    - SMA_t: Moving average over the specified window.
-    - STD_t: Rolling standard deviation.
-    - Upper Band = SMA_t + (std_dev × STD_t)
-    - Lower Band = SMA_t - (std_dev × STD_t)
-    - %B indicator = (Price - Lower Band) / (Upper Band - Lower Band)
+1. Retrieve historical price data (close, high, low) from the database.  
+2. Compute rolling indicators:
+   - SMA = rolling simple moving average of the close price.
+   - STD = rolling standard deviation of the close price.
+   - Upper Band = SMA + (_std_dev_ × STD)
+   - Lower Band = SMA - (_std_dev_ × STD)
+   - %B indicator = (close - Lower Band) / (Upper Band - Lower Band)
+3. Generate raw trading signals:
+   - Long entry (signal = 1): if yesterday’s close > yesterday’s lower band and today’s close < today’s lower band.
+   - Short entry (signal = -1): if yesterday’s close < yesterday’s upper band and today’s close > today’s upper band.
+     When in long-only mode short signals are removed.
+4. Filter out duplicate consecutive signals to ensure only distinct trade entries.
+5. Apply risk management via an external RiskManager component that integrates stop-loss, 
+   take-profit, slippage, and transaction cost adjustments, and computes the realized and cumulative returns.
+6. The strategy supports both backtesting (by providing start_date and end_date) and forecasting (using a minimal lookback and latest_only option).
+7. When multiple tickers are provided, the calculations are grouped by ticker and the latest signal is computed per ticker.
 
-Trading signals:
-    - Long entry (signal = 1): Triggered when yesterday’s close was above the lower band and today’s close falls below the lower band.
-    - Short entry (signal = -1): Triggered when yesterday’s close was below the upper band and today’s close rises above the upper band.
-    
-Risk management (via the RiskManager) applies stop loss and take profit rules
-with adjustments for slippage and transaction cost:
-    For a long trade:
-        Stop loss = entry_price × (1 - stop_loss_pct)
-        Target    = entry_price × (1 + take_profit_pct)
-    For a short trade:
-        Stop loss = entry_price × (1 + stop_loss_pct)
-        Target    = entry_price × (1 - take_profit_pct)
-    Realized returns are computed accordingly.
+Outputs:
+    A DataFrame with the following columns:
+      - 'close', 'high', 'low'     : Price references.
+      - 'sma'                      : Rolling simple moving average.
+      - 'upper_bb'                 : Upper Bollinger Band.
+      - 'lower_bb'                 : Lower Bollinger Band.
+      - 'signal_strength'          : Normalized indicator (%B).
+      - 'signal'                   : Raw trading signal (1, -1, or 0).
+      - 'position'                 : Updated trading position after risk management.
+      - 'return'                   : Realized return on exit (if an exit event occurs).
+      - 'cumulative_return'        : Cumulative return via risk-managed trading.
+      - 'exit_type'                : Reason for exiting a trade (stop_loss, take_profit, signal_exit, or none).
 
-All operations (rolling indicators, signal generation, risk management) are vectorized to optimize execution speed.
+Args:
+    ticker (str or List[str]): Stock ticker symbol or list of tickers.
+    start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+    end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+    initial_position (int): Starting trading position (default=0).
+    latest_only (bool): If True, returns only the last bar (per ticker for multi-ticker scenarios).
+
+Strategy-specific parameters provided via `params` (with defaults):
+    - window (int): Lookback period for SMA and standard deviation (default: 20).
+    - std_dev (float): Multiplier for STD to set the Bollinger Bands (default: 2.0).
+    - long_only (bool): If True, only long trades are allowed (default: True).
+    - stop_loss_pct (float): Stop loss percentage (default: 0.05).
+    - take_profit_pct (float): Take profit percentage (default: 0.10).
+    - slippage_pct (float): Slippage percentage for execution adjustments (default: 0.001).
+    - transaction_cost_pct (float): Transaction cost as a fraction (default: 0.001).
+
+Outputs:
+    pd.DataFrame: DataFrame containing price data, computed indicators, raw signals, 
+    and risk-managed performance metrics for backtesting or forecasting.
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, List
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
@@ -44,151 +69,129 @@ class BollingerBandsStrategy(BaseStrategy):
     """
     BollingerBandsStrategy implements a mean-reversion trading strategy based on Bollinger Bands.
     
-    The strategy computes a rolling simple moving average (SMA) and standard deviation over a specified window,
-    and derives the upper and lower Bollinger Bands:
-    
-        Upper Band = SMA + (std_dev × standard deviation)
-        Lower Band = SMA - (std_dev × standard deviation)
-    
-    It then calculates the %B indicator, defined as:
-    
-        %B = (Price - Lower Band) / (Upper Band - Lower Band)
-    
-    Trading signals are generated as follows:
-      - A long entry (signal = 1) is triggered when the previous close was above the lower band and the current close 
-        falls below the lower band, suggesting an oversold condition.
-      - A short entry (signal = -1) is triggered when the previous close was below the upper band and the current close 
-        moves above the upper band, suggesting an overbought condition.
-      
-    Subsequent duplicate signals are filtered out to avoid repeated entries. Risk management is then applied to adjust
-    the signals by incorporating stop loss, take profit, slippage, and transaction cost considerations.
-    
-    Hyperparameters:
-        window (int): Lookback period for SMA and standard deviation (default: 20).
-        std_dev (float): Multiplier for standard deviation to set Bollinger Bands (default: 2.0).
-        long_only (bool): Flag to allow only long trades (default: True).
-        stop_loss_pct (float): Stop loss percentage for risk management (default: 0.05).
-        take_profit_pct (float): Take profit percentage for risk management (default: 0.10).
-        slippage_pct (float): Slippage percentage for execution price adjustments (default: 0.001).
-        transaction_cost_pct (float): Transaction cost percentage per trade (default: 0.001).
+    It calculates the rolling mean (SMA), rolling standard deviation (STD), and sets 
+    the Bollinger Bands as SMA ± (std_dev × STD). The %B indicator is computed as a normalized
+    measure of the closing price's distance from the lower band. Trading signals are triggered 
+    on crossovers of the price with the Bollinger Bands. Risk management is applied via the RiskManager
+    to adjust for slippage, transaction costs, stop-loss, and take-profit rules.
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the BollingerBandsStrategy with database configuration and strategy parameters.
+        Initialize the BollingerBandsStrategy class with risk management and indicator parameters.
         
         Args:
             db_config (DatabaseConfig): Database configuration settings.
-            params (dict, optional): Dictionary of strategy parameters.
+            params (dict, optional): Dictionary of strategy-specific parameters.
         """
         super().__init__(db_config, params)
-        # Strategy parameters.
         self.window = self.params.get('window', 20)
         self.std_dev = self.params.get('std_dev', 2.0)
         self.long_only = self.params.get('long_only', True)
-        
-        # Risk management parameters.
+        # Risk management parameters:
         self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
         self.take_profit_pct = self.params.get('take_profit_pct', 0.10)
         self.slippage_pct = self.params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
 
     def generate_signals(self, 
-                         ticker: str, 
+                         ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
-        Generate trading signals and apply risk management for the given ticker.
-        
-        The method retrieves historical price data from the database, computes the Bollinger Bands and %B indicator, 
-        and then determines entry signals when price crosses the Bollinger Bands. Risk management is applied to 
-        adjust trading signals with stop loss and take profit rules, including slippage and transaction cost impacts.
-        
-        Mathematical summary:
-          - SMA_t = Moving Average(close, window)
-          - STD_t = Standard Deviation(close, window)
-          - Upper Band = SMA_t + (std_dev × STD_t)
-          - Lower Band = SMA_t - (std_dev × STD_t)
-          - %B = (close - Lower Band) / (Upper Band - Lower Band)
-          - Long signal: if close[t-1] > LowerBand[t-1] and close[t] < LowerBand[t]
-          - Short signal: if close[t-1] < UpperBand[t-1] and close[t] > UpperBand[t]
-          
-        Risk Management:
-          - For a long trade, stop loss = entry_price × (1 - stop_loss_pct) and target = entry_price × (1 + take_profit_pct).
-          - For a short trade, stop loss = entry_price × (1 + stop_loss_pct) and target = entry_price × (1 - take_profit_pct).
-          - Trade return is computed based on the adjusted exit price with considerations for slippage and transaction costs.
-        
+        Generate trading signals and apply risk management adjustments for the specified ticker(s).
+
+        This function retrieves historical daily prices, computes Bollinger Bands indicators 
+        (SMA, STD, upper & lower bands), and the %B indicator (normalized signal strength).  
+        Signals are generated when the close price crosses below the lower band (triggering a long entry)
+        or above the upper band (triggering a short entry) while filtering out duplicate consecutive signals.
+        The external RiskManager is then applied to adjust the signals for stop-loss, take-profit, slippage, 
+        and transaction costs. The result is a DataFrame with risk-managed performance metrics.
+
         Args:
-            ticker (str): Stock symbol.
-            start_date (str, optional): Start date (YYYY-MM-DD) for backtesting.
-            end_date (str, optional): End date (YYYY-MM-DD) for backtesting.
-            initial_position (int): Starting position (1 for long, -1 for short, 0 for neutral).
-            latest_only (bool): If True, return only the signal for the most recent date.
-        
+            ticker (str or List[str]): A single stock ticker or a list of tickers.
+            start_date (str, optional): Backtesting start date (YYYY-MM-DD).
+            end_date (str, optional): Backtesting end date (YYYY-MM-DD).
+            initial_position (int): Starting position (default 0; 1 for long, -1 for short).
+            latest_only (bool): If True, returns only the last bar for each ticker (or overall, for a single ticker).
+
         Returns:
-            pd.DataFrame: DataFrame containing price data, computed indicators, generated signals, and risk-managed 
-            performance metrics. Columns include 'close', 'high', 'low', 'signal', 'signal_strength', 'upper_bb', 
-            'lower_bb', 'sma', 'position', 'return', 'cumulative_return', and 'exit_type'.
+            pd.DataFrame: DataFrame including price data, computed indicators, raw signals, and 
+                        risk-managed performance metrics (e.g., 'position', 'return', 'cumulative_return', 'exit_type').
         """
-        # Retrieve historical price data for the ticker with optional date filtering.
+        # Retrieve historical price data; use a lookback that is at least 2×window if no dates provided.
         prices = self.get_historical_prices(
             ticker,
             from_date=start_date,
             to_date=end_date,
             lookback=self.window * 2 if not (start_date or end_date) else None
         )
-
-        # Validate that sufficient price data is available.
+        
         if not self._validate_data(prices, min_records=self.window + 1):
             self.logger.error("Not enough data for computing indicators")
             return pd.DataFrame()
 
-        # Compute Bollinger Bands indicators.
-        close = prices['close']
-        sma = close.rolling(self.window, min_periods=self.window).mean()
-        std = close.rolling(self.window, min_periods=self.window).std()
-        upper_bb = sma + std * self.std_dev
-        lower_bb = sma - std * self.std_dev
+        # Check if processing single ticker (index is DatetimeIndex) or multiple tickers (MultiIndex)
+        multi_ticker = isinstance(ticker, list) or ('ticker' in prices.index.names)
 
-        # Compute %B indicator to gauge the price position relative to the bands.
-        with np.errstate(divide='ignore', invalid='ignore'):
-            percent_b = (close - lower_bb) / (upper_bb - lower_bb)
-        percent_b = percent_b.replace([np.inf, -np.inf], np.nan)
+        if multi_ticker:
+            # Compute rolling indicators for each ticker.
+            prices['sma'] = prices.groupby(level='ticker')['close'].transform(
+                lambda x: x.rolling(self.window, min_periods=self.window).mean()
+            )
+            prices['std'] = prices.groupby(level='ticker')['close'].transform(
+                lambda x: x.rolling(self.window, min_periods=self.window).std()
+            )
+            prices['upper_bb'] = prices['sma'] + prices['std'] * self.std_dev
+            prices['lower_bb'] = prices['sma'] - prices['std'] * self.std_dev
+            prices['percent_b'] = (prices['close'] - prices['lower_bb']) / (prices['upper_bb'] - prices['lower_bb'])
+            # Compute shifted values for each ticker group.
+            prices['close_shift'] = prices.groupby(level='ticker')['close'].shift(1)
+            prices['lower_bb_shift'] = prices.groupby(level='ticker')['lower_bb'].shift(1)
+            prices['upper_bb_shift'] = prices.groupby(level='ticker')['upper_bb'].shift(1)
+            # Generate raw signals across tickers.
+            crossed_below = (prices['close_shift'] > prices['lower_bb_shift']) & (prices['close'] < prices['lower_bb'])
+            crossed_above = (prices['close_shift'] < prices['upper_bb_shift']) & (prices['close'] > prices['upper_bb'])
+            raw_signals = pd.Series(0, index=prices.index)
+            raw_signals[crossed_below] = 1
+            raw_signals[crossed_above] = -1
+            # Filter out duplicate consecutive signals for each ticker.
+            prev_signals = raw_signals.replace(0, np.nan).groupby(level='ticker').ffill().groupby(level='ticker').shift(1).fillna(0)
+            signals = raw_signals.where(raw_signals != prev_signals, 0)
+        else:
+            # Single ticker processing.
+            prices['sma'] = prices['close'].rolling(self.window, min_periods=self.window).mean()
+            prices['std'] = prices['close'].rolling(self.window, min_periods=self.window).std()
+            prices['upper_bb'] = prices['sma'] + prices['std'] * self.std_dev
+            prices['lower_bb'] = prices['sma'] - prices['std'] * self.std_dev
+            prices['percent_b'] = (prices['close'] - prices['lower_bb']) / (prices['upper_bb'] - prices['lower_bb'])
+            prices['close_shift'] = prices['close'].shift(1)
+            prices['lower_bb_shift'] = prices['lower_bb'].shift(1)
+            prices['upper_bb_shift'] = prices['upper_bb'].shift(1)
+            crossed_below = (prices['close_shift'] > prices['lower_bb_shift']) & (prices['close'] < prices['lower_bb'])
+            crossed_above = (prices['close_shift'] < prices['upper_bb_shift']) & (prices['close'] > prices['upper_bb'])
+            raw_signals = pd.Series(0, index=prices.index)
+            raw_signals[crossed_below] = 1
+            raw_signals[crossed_above] = -1
+            # Remove duplicate consecutive signals.
+            prev_signals = raw_signals.replace(0, np.nan).ffill().shift(1).fillna(0)
+            signals = raw_signals.where(raw_signals != prev_signals, 0)
 
-        # Generate raw trading signals using look-ahead prevention.
-        # Long signal: price crosses below lower band; Short signal: price crosses above upper band.
-        crossed_below = (close.shift(1) > lower_bb.shift(1)) & (close < lower_bb)
-        crossed_above = (close.shift(1) < upper_bb.shift(1)) & (close > upper_bb)
-        raw_signals = pd.Series(0, index=close.index)
-        raw_signals[crossed_below] = 1
-        raw_signals[crossed_above] = -1
+        # Build the signals DataFrame that holds indicators and prices.
+        signals_df = prices[['close', 'high', 'low', 'sma', 'upper_bb', 'lower_bb', 'percent_b']].copy()
+        signals_df.rename(columns={'percent_b': 'signal_strength'}, inplace=True)
+        signals_df['signal'] = signals
 
-        # Filter out consecutive duplicate signals to ensure distinct trade entries.
-        prev_signals = raw_signals.replace(0, np.nan).ffill().shift(1).fillna(0)
-        signals = raw_signals.where(raw_signals != prev_signals, 0)
-
-        if self.long_only:
-            signals[signals == -1] = 0  # Filter out short signals if long_only is enabled.
-
-        # Construct a DataFrame with computed indicators and raw signals.
-        signals_df = pd.DataFrame({
-            'close': close,
-            'high': prices['high'],
-            'low': prices['low'],
-            'signal': signals,
-            'signal_strength': percent_b,
-            'upper_bb': upper_bb,
-            'lower_bb': lower_bb,
-            'sma': sma
-        }).dropna()
+        # Drop rows with missing indicator values.
+        signals_df = signals_df.dropna()
 
         if signals_df.empty:
             self.logger.warning("Signals DataFrame is empty after indicator computation")
             return pd.DataFrame()
 
-        # Apply risk management to integrate stop-loss, take-profit, slippage, and transaction costs.
+        # Apply risk management adjustments (stop-loss, take profit, slippage, transaction costs).
         risk_manager = RiskManager(
             stop_loss_pct=self.stop_loss_pct,
             take_profit_pct=self.take_profit_pct,
@@ -197,24 +200,12 @@ class BollingerBandsStrategy(BaseStrategy):
         )
         results = risk_manager.apply(signals_df, initial_position)
 
-        # If only the latest signal is desired, return the last row.
-        return results.tail(1) if latest_only else results
-
-    def _validate_data(self, df: pd.DataFrame, min_records: int = 1) -> bool:
-        """
-        Validate that the DataFrame contains sufficient and valid price data for the strategy.
-        
-        Args:
-            df (pd.DataFrame): Price data DataFrame.
-            min_records (int): Minimum number of records required.
-        
-        Returns:
-            bool: True if data is sufficient and contains no critical NaN values, False otherwise.
-        """
-        if df.empty or len(df) < min_records:
-            self.logger.error(f"Insufficient data: found {len(df)} records, required {min_records}")
-            return False
-        if df['close'].isnull().sum() > 0:
-            self.logger.warning("Price data contains NaN values in 'close' column")
-            return False
-        return True
+        # If latest signal is required, return only the last row per ticker (or overall for single ticker).
+        if latest_only:
+            if multi_ticker:
+                # For multi-ticker, group by 'ticker' (assumed to be part of the MultiIndex) and take the last date.
+                results = results.reset_index(level='date')
+                results = results.groupby('ticker', group_keys=False).last()
+            else:
+                results = results.tail(1)
+        return results
