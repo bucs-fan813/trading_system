@@ -67,6 +67,7 @@ class VolatilitySqueeze(BaseStrategy):
             - 'take_profit_pct'      : Take profit threshold (default = 0.10).
             - 'slippage_pct'         : Slippage percentage (default = 0.001).
             - 'transaction_cost_pct' : Transaction cost percentage (default = 0.001).
+            - 'long_only'            : If True, generate long-only signals (default = True).
 
     Returns:
         pd.DataFrame: DataFrame with columns including price data, computed indicators,
@@ -96,7 +97,8 @@ class VolatilitySqueeze(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -204,6 +206,9 @@ class VolatilitySqueeze(BaseStrategy):
             res['signal_strength'] = 0
             rolling_mom_std = momentum.rolling(window=20).std() + 1e-6
             res.loc[res['signal'] != 0, 'signal_strength'] = np.abs(momentum[res['signal'] != 0]) / rolling_mom_std[res['signal'] != 0]
+
+            if self.params['long_only']:
+                res.loc[res['signal'] == -1, 'signal'] = 0
 
             # Drop rows with NaN values due to rolling calculations.
             res = res.dropna(subset=['bb_middle', 'kc_middle', 'momentum'])

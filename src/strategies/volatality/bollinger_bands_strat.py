@@ -182,6 +182,9 @@ class BollingerBandsStrategy(BaseStrategy):
         # Build the signals DataFrame that holds indicators and prices.
         signals_df = prices[['close', 'high', 'low', 'sma', 'upper_bb', 'lower_bb', 'percent_b']].copy()
         signals_df.rename(columns={'percent_b': 'signal_strength'}, inplace=True)
+        if self.long_only:
+            # Remove short signals if long-only mode is enabled.
+            signals[signals == -1] = 0
         signals_df['signal'] = signals
 
         # Drop rows with missing indicator values.

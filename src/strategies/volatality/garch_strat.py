@@ -1,7 +1,5 @@
 # trading_system/src/strategies/volatality/garch_model.py
 
-# TODO Long Only
-
 import pandas as pd
 import numpy as np
 import warnings
@@ -69,6 +67,7 @@ class GARCHModel(BaseStrategy):
             - 'take_profit_pct' (float): Take profit percentage (default: 0.10).
             - 'slippage_pct' (float): Slippage percentage (default: 0.001).
             - 'transaction_cost_pct' (float): Transaction cost percentage (default: 0.001).
+            - 'long_only' (bool): If True, restricts trading to long positions only (default: True).
     
     Output:
         A pandas DataFrame containing:
@@ -102,7 +101,8 @@ class GARCHModel(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -261,6 +261,10 @@ class GARCHModel(BaseStrategy):
         
         # Drop rows that never received a forecast (and hence lacking signals).
         result = result.dropna(subset=['forecast_volatility'])
+
+        if self.params['long_only']:
+            # If long_only is True, restrict trading to long positions only.
+            result['signal'] = result['signal'].clip(lower = 0)
         
         # Apply risk management adjustments via the RiskManager.
         risk_manager = RiskManager(

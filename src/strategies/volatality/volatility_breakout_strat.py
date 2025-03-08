@@ -54,6 +54,7 @@ class VolatilityBreakout(BaseStrategy):
             - 'take_profit_pct' (float): Take-profit percentage (default: 0.10).
             - 'slippage_pct' (float): Slippage percentage (default: 0.001).
             - 'transaction_cost_pct' (float): Transaction cost percentage (default: 0.001).
+            - 'long_only' (bool): If True, restricts trading to long positions only (default: True).
 
     Returns:
         pd.DataFrame: DataFrame containing the following columns:
@@ -78,7 +79,8 @@ class VolatilityBreakout(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -186,6 +188,10 @@ class VolatilityBreakout(BaseStrategy):
         result.loc[result['signal'] == -1, 'signal_strength'] = (
             (result['close'] - result['lower_band']) / (result['volatility'] + eps)
         )
+
+        # Apply long-only constraint if specified.
+        if self.params['long_only']:
+            result.loc[result['signal'] == -1, 'signal'] = 0
 
         # Remove observations with NaN values due to the rolling calculations.
         result = result.dropna()

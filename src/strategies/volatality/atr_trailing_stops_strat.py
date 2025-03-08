@@ -1,7 +1,5 @@
 # trading_system/src/strategies/volatality/atr_trailing_stops.py
 
-# TODO: Long Only
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Union, List
@@ -72,6 +70,7 @@ class ATRTrailingStops(BaseStrategy):
         - take_profit_pct (float): Take-profit percentage for risk management (default: 0.10).
         - slippage_pct (float): Slippage percentage for risk management (default: 0.001).
         - transaction_cost_pct (float): Transaction cost percentage for risk management (default: 0.001).
+        - long_only (bool): If True, restricts trading to long positions only (default: True).
 
     Returns:
         pd.DataFrame: DataFrame with the following key columns:
@@ -102,7 +101,8 @@ class ATRTrailingStops(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -260,6 +260,9 @@ class ATRTrailingStops(BaseStrategy):
                     0
                 )
             )
+
+            if self.params['long_only']:
+                df_signals['signal'] = df_signals['signal'].clip(lower=0)
 
             # Drop temporary flags
             df_signals.drop(columns=['in_long', 'in_short', 'trend_up'], inplace=True)
