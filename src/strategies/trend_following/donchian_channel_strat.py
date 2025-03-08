@@ -61,6 +61,7 @@ class DonchianChannel(BaseStrategy):
                 - 'take_profit_pct': Take profit percentage for risk management (default: 0.10).
                 - 'slippage_pct': Estimated slippage percentage (default: 0.001).
                 - 'transaction_cost_pct': Transaction cost percentage per trade (default: 0.001).
+                - 'long_only': If True, the strategy will only generate long signals (default: True).
         """
         default_params = {
             'lookback_period': 20,
@@ -72,7 +73,8 @@ class DonchianChannel(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
 
         if params:
@@ -261,6 +263,8 @@ class DonchianChannel(BaseStrategy):
 
         result['position'] = positions
         result['signal'] = signals
+        if self.params['long_only']:
+            result['signal'] = result['signal'].clip(lower=0) 
         # Remove any rows with NaN values (due to rolling window calculations)
         return result.dropna()
 

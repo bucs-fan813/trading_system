@@ -1,7 +1,5 @@
 # trading_system/src/strategies/trend_following/parabolic_sar.py
 
-# TODO: Long Only
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Union, List
@@ -80,6 +78,7 @@ class ParabolicSAR(BaseStrategy):
         - take_profit_pct: Take profit percentage (default: 0.10).
         - slippage_pct: Slippage percentage (default: 0.001).
         - transaction_cost_pct: Transaction cost percentage (default: 0.001).
+        - long_only: Whether to allow only long trades (default: True).
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
@@ -101,6 +100,7 @@ class ParabolicSAR(BaseStrategy):
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -218,7 +218,9 @@ class ParabolicSAR(BaseStrategy):
 
         # Generate a sell signal when the trend reverses downward AND passes the ATR filter.
         sell_signal = (trend_change < 0) & atr_filter
-        result.loc[sell_signal, 'signal'] = -1
+
+        if not self.params['long_only']:
+            result.loc[sell_signal, 'signal'] = -1
 
         # Compute a normalized signal strength using the distance between close and sar,
         # normalized by ATR (with a small epsilon to avoid division by zero).

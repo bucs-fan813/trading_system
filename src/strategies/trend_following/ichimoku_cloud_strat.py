@@ -1,7 +1,5 @@
 # trading_system/src/strategies/trend_following/ichimoku_cloud.py
 
-# TODO: Long Only
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Union, List
@@ -63,6 +61,7 @@ class IchimokuCloud(BaseStrategy):
             - 'take_profit_pct': float, take profit percentage (default: 0.10)
             - 'slippage_pct': float, estimated slippage as a fraction (default: 0.001)
             - 'transaction_cost_pct': float, transaction cost as a fraction (default: 0.001)
+            - 'long_only': bool, whether to allow only long positions (default: True)
     
     Outputs:
         A pandas DataFrame containing, at a minimum:
@@ -89,7 +88,8 @@ class IchimokuCloud(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -253,7 +253,10 @@ class IchimokuCloud(BaseStrategy):
         
         # Set signals: +1 for buys and -1 for sells.
         price_data.loc[buy_signals, 'signal'] = 1
-        price_data.loc[sell_signals, 'signal'] = -1
+        if self.params.get('long_only', True):
+            price_data.loc[sell_signals, 'signal'] = 0
+        else:
+            price_data.loc[sell_signals, 'signal'] = -1
         
         # Drop rows with NA values that may result from rolling calculations.
         price_data = price_data.dropna()

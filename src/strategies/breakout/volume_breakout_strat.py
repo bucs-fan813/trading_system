@@ -1,7 +1,5 @@
 # trading_system/src/strategies/breakout/volume_breakout.py
 
-#TODO Long Only
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Union, List
@@ -83,6 +81,7 @@ class VolumeBreakout(BaseStrategy):
             - take_profit_pct (float): Take profit percentage (default: 0.10).
             - slippage_pct (float): Slippage percentage (default: 0.001).
             - transaction_cost_pct (float): Transaction cost percentage (default: 0.001).
+            - long_only (bool): If True, only long trades are allowed (default: True).
         """
         default_params = {
             'lookback_period': 20,
@@ -96,7 +95,8 @@ class VolumeBreakout(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -233,7 +233,10 @@ class VolumeBreakout(BaseStrategy):
             sell_signal &= (result['price_change'].abs() > result['price_volatility'] * self.params['atr_threshold'])
         
         result.loc[buy_signal, 'signal'] = 1
-        result.loc[sell_signal, 'signal'] = -1
+        if self.params['long_only']:
+            result.loc[sell_signal, 'signal'] = 0
+        else:
+            result.loc[sell_signal, 'signal'] = -1
         
         # Compute normalized signal strength.
         if self.params['use_atr_filter']:

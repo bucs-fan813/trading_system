@@ -55,6 +55,7 @@ class TriangleBreakout(BaseStrategy):
       - take_profit_pct (float): Take profit percentage (0.10).
       - slippage_pct (float): Estimated slippage percentage (0.001).
       - transaction_cost_pct (float): Estimated transaction cost percentage (0.001).
+      - long_only (bool): If True, only long positions are allowed (True).
     """
     
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
@@ -74,7 +75,8 @@ class TriangleBreakout(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True
         }
         if params:
             default_params.update(params)
@@ -182,7 +184,10 @@ class TriangleBreakout(BaseStrategy):
                             elif current_close < lower_line * (1 - self.params['breakout_threshold']):
                                 if (not self.params['volume_confirm'] or 
                                     result['volume'].iloc[i] > result['avg_volume'].iloc[i]):
-                                    result.iloc[i, result.columns.get_loc('signal')] = -1
+                                    if self.params['long_only']:
+                                        result.iloc[i, result.columns.get_loc('signal')] = 0
+                                    else:
+                                        result.iloc[i, result.columns.get_loc('signal')] = -1
                                     result.iloc[i, result.columns.get_loc('in_pattern')] = False
                                 else:
                                     result.iloc[i, result.columns.get_loc('in_pattern')] = True

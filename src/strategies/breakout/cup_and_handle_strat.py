@@ -1,7 +1,5 @@
 # trading_system/src/strategies/cup_and_handle.py
 
-#TODO Long only
-
 import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
@@ -57,6 +55,7 @@ class CupAndHandle(BaseStrategy):
         - take_profit_pct (float): Take profit percentage (default: 0.10).
         - slippage_pct (float): Estimated slippage percentage (default: 0.001).
         - transaction_cost_pct (float): Estimated transaction cost percentage (default: 0.001).
+        - long_only (bool): If True, only long positions are allowed (default: True).
     """
     
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
@@ -73,14 +72,15 @@ class CupAndHandle(BaseStrategy):
             'max_cup_duration': 150,
             'min_handle_duration': 5,
             'max_handle_duration': 30,
-            'cup_depth_threshold': 0.3,       # Cup depth must be less than 30% of resistance
+            'cup_depth_threshold': 0.3,         # Cup depth must be less than 30% of resistance
             'handle_depth_threshold': 0.5,      # Handle depth must be less than 50% of cup depth
             'breakout_threshold': 0.005,        # Breakout occurs when price exceeds resistance by 0.5%
             'volume_confirm': True,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+            'transaction_cost_pct': 0.001,
+            'long_only': True                   # This is a long only strategy by design and would work the same irrespecyive of the parameter
         }
         if params:
             default_params.update(params)
