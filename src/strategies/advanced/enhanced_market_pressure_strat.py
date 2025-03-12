@@ -1,3 +1,9 @@
+# Todo: Fix strucutre of the code
+# TODO: Signal Stregth
+# TODO: Long Only
+# TODO run claude to verify logic
+# TODO: Improvements from deepseek: Fit various distributions [Beta, JohnsonSB, Normal], Maket regime change using GARCH, adaptive leavning
+
 """
 Market Pressure Strategy with Integrated Risk Management
 
