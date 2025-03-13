@@ -1,475 +1,435 @@
-# Todo: Fix strucutre of the code
-# TODO: Signal Stregth
-# TODO: Long Only
-# TODO run claude to verify logic
-# TODO: Improvements from deepseek: Fit various distributions [Beta, JohnsonSB, Normal], Maket regime change using GARCH, adaptive leavning
+# src/strategies/advanced/enhanced_market_pressure_strat.py
 
-"""
-Market Pressure Strategy with Integrated Risk Management
+"""strat credit: https://www.jamessawyer.co.uk/market-pressure-analysis-page.html"""
 
-This strategy computes an enhanced market pressure indicator based on a normalized 
-price position and a volatility adjustment. Mathematically, for each bar:
-
-    norm_pos  = (close - low) / (high - low)
-    volatility = rolling_std(high - low) over a lookback window
-    vap       = norm_pos * (1 + volatility/rolling_mean(volatility))
-    z_pos     = (norm_pos - rolling_mean(norm_pos)) / (rolling_std(norm_pos) + ε)
-
-Over a rolling window of recent norm_pos values (optionally using volume‐based weights),
-a Beta distribution is fitted (using MLE or method‐of‐moments as fallback) to yield parameters α and β.
-These parameters produce a buy probability: 1 – BetaCDF(0.6, α, β) and a sell probability: BetaCDF(0.4, α, β).
-The pressure ratio is then defined as:
-    
-    pressure_ratio = (buy_prob - sell_prob) / (buy_prob + sell_prob)
-
-A high absolute pressure ratio indicates a strong signal (with sign determining “buying” vs “selling”).
-This raw signal is then passed to a risk management component (RiskManager) that applies adjustments 
-for slippage and transaction costs, and enforces stop-loss/take-profit thresholds.
-
-The strategy supports full backtesting (entire DataFrame output) as well as EOD forecasting (latest row only).
-It supports a vectorized multi–ticker analysis by grouping the historical data and applying the calculations
-in an efficient fashion.
-
-Outputs:
-    A DataFrame with the following columns for each bar:
-        - open, high, low, close [, volume]
-        - norm_pos, vap, volatility, z_pos
-        - buy_prob, sell_prob, pressure_ratio, signal_confidence, net_pressure, indicator_direction
-        - signal (raw trading signal: 1 for buy, -1 for sell, 0 for hold)
-        - daily_return: percentage change of close price
-        - strategy_return: daily return scaled by previous signal (raw return)
-        - position: updated position from risk management
-        - rm_strategy_return: risk-managed (realized) trade return
-        - rm_cumulative_return: cumulative return from trades after risk management
-        - rm_action: indicator (stop_loss, take_profit, or signal_exit)
-
-Args:
-    ticker (str or List[str]): Stock ticker symbol or list of tickers.
-    start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
-    end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-    initial_position (int): Starting trading position (default=0, meaning flat).
-    latest_only (bool): If True, returns only the final row (per ticker).
-    
-Strategy-specific parameters (in self.params or defaults):
-    - position_window       : Rolling window for Beta estimation (default: 20).
-    - volume_enabled        : Whether to use volume weighting for Beta estimation (default: True).
-    - default_confidence      : Minimum absolute pressure ratio to trigger a trade (default: 0.7).
-    - signal_expiry         : Number of bars a given signal is active (default: 3).
-    - risk_per_trade        : Proportion of account risked on each trade (default: 0.01).
-    - max_exposure          : Maximum allowed exposure (default: 0.04).
-    - stop_loss_pct         : Stop loss percentage (default: 0.05).
-    - take_profit_pct       : Take profit percentage (default: 0.10).
-    - slippage_pct          : Slippage percentage (default: 0.001).
-    - transaction_cost_pct  : Transaction cost percentage (default: 0.001).
-"""
-
-import math
-import random
-import numpy as np
 import pandas as pd
-from scipy.stats import beta, mannwhitneyu
-from scipy import optimize
-from time import perf_counter
+import numpy as np
+import logging
+from typing import Dict, Optional, Union, List
+from scipy.stats import beta, norm, kstest
+import warnings
 
-# Import the BaseStrategy and RiskManager classes from your modules
-from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+from src.strategies.base_strat import BaseStrategy
+from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
-
-def advanced_normalization(ohlc_df, lookback_vol=20, lookback_z=50):
+class EnhancedMarketPressureStrategy(BaseStrategy):
     """
-    Compute normalized positioning, volatility adjustment and z-score for a given OHLC DataFrame.
+    Enhanced Market Pressure Analysis Strategy.
     
-    Args:
-        ohlc_df (pd.DataFrame): DataFrame containing 'high', 'low', 'close' columns.
-        lookback_vol (int): Lookback window for volatility calculation.
-        lookback_z (int): Lookback window for z-score calculation.
+    This strategy transforms ordinary price data into statistical insights by analyzing
+    the normalized position of closing prices within their daily ranges. It models these
+    positions using probability distributions to reveal underlying market forces that
+    conventional indicators may miss.
     
-    Returns:
-        pd.DataFrame: DataFrame with columns 'norm_pos', 'vap', 'volatility', and 'z_pos'.
+    Key features:
+    - Normalized position modeling: (close - low) / (high - low)
+    - Statistical distribution fitting (Beta and optionally other distributions)
+    - Volume-weighted analysis for higher confidence
+    - Divergence detection between price trends and pressure trends
+    - Statistical significance testing to validate signals
     """
-    df = ohlc_df.copy()
-    df['range'] = df['high'] - df['low']
-    df['norm_pos'] = (df['close'] - df['low']) / df['range'].replace(0, 1e-9)
-    df['volatility'] = df['range'].rolling(lookback_vol, min_periods=1).std()
-    rolling_mean_vol = df['volatility'].rolling(lookback_vol, min_periods=1).mean().replace(0, 1e-9)
-    df['vap'] = df['norm_pos'] * (1 + (df['volatility'] / rolling_mean_vol))
-    norm_mean = df['norm_pos'].rolling(lookback_z, min_periods=1).mean()
-    norm_std = df['norm_pos'].rolling(lookback_z, min_periods=1).std().replace(0, 1e-9)
-    df['z_pos'] = (df['norm_pos'] - norm_mean) / norm_std
-    return df[['norm_pos', 'vap', 'volatility', 'z_pos']]
-
-
-def transform_volume_confidence(volume_data, window=20):
-    """
-    Compute volume-based confidence weights using a rolling average.
     
-    Args:
-        volume_data (list): List of volume values.
-        window (int): Rolling window period.
-    
-    Returns:
-        list: Confidence weights transformed via a sigmoid function.
-    """
-    if len(volume_data) < window:
-        return [1.0] * len(volume_data)
-    
-    rel_volume = []
-    for i in range(len(volume_data)):
-        if i < window:
-            avg_vol = sum(volume_data[:i+1]) / (i+1)
-        else:
-            avg_vol = sum(volume_data[i-window:i]) / window
-        rel_vol = volume_data[i] / avg_vol if avg_vol > 0 else 1.0
-        rel_volume.append(rel_vol)
-    
-    confidence_weights = []
-    for rv in rel_volume:
-        confidence = 1.0 + (2.0 / (1.0 + math.exp(-2.0 * (rv - 1.0))) - 1.0)
-        confidence_weights.append(confidence)
-    
-    return confidence_weights
-
-
-def beta_distribution_mle(data, weights=None):
-    """
-    Estimate Beta distribution parameters via (weighted) maximum likelihood estimation.
-    
-    Args:
-        data (list): List of normalized positions.
-        weights (list, optional): List of weights for each data point.
-    
-    Returns:
-        tuple: Estimated (alpha, beta) if successful.
-    
-    Raises:
-        ValueError: If the optimization fails.
-    """
-    if weights is None:
-        weights = [1.0] * len(data)
-    
-    def neg_log_likelihood(params):
-        a, b = params
-        if a <= 0 or b <= 0:
-            return float('inf')
-        nll = 0
-        for x, w in zip(data, weights):
-            x = max(0.001, min(0.999, x))
-            log_pdf = (a - 1) * math.log(x) + (b - 1) * math.log(1 - x)
-            log_pdf -= math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
-            nll -= w * log_pdf
-        return nll
-
-    weighted_mean = sum(x * w for x, w in zip(data, weights)) / sum(weights)
-    weighted_var = sum(w * (x - weighted_mean)**2 for x, w in zip(data, weights)) / sum(weights)
-    if weighted_var < weighted_mean * (1 - weighted_mean):
-        t = weighted_mean * (1 - weighted_mean) / weighted_var - 1
-        a_init = weighted_mean * t
-        b_init = (1 - weighted_mean) * t
-    else:
-        a_init = 1.0
-        b_init = 1.0
-
-    a_init = max(0.5, min(10.0, a_init))
-    b_init = max(0.5, min(10.0, b_init))
-    result = optimize.minimize(
-        neg_log_likelihood,
-        [a_init, b_init],
-        bounds=[(0.01, 100), (0.01, 100)]
-    )
-    
-    if result.success:
-        return result.x
-    else:
-        raise ValueError("MLE optimization failed")
-
-
-def compute_optimal_distribution(normalized_positions, window=20, volume_weights=None):
-    """
-    Compute Beta distribution parameters over the last 'window' normalized positions.
-    
-    Args:
-        normalized_positions (list): List of normalized positions.
-        window (int): Rolling window size.
-        volume_weights (list, optional): Corresponding volume weights.
-    
-    Returns:
-        dict: Dictionary with distribution parameters (alpha, beta), a validity flag, and method used.
-    """
-    if len(normalized_positions) < window:
-        return {'alpha': 1.0, 'beta': 1.0, 'valid': False}
-    
-    positions = normalized_positions[-window:]
-    if volume_weights and len(volume_weights) >= window:
-        weights = volume_weights[-window:]
-    else:
-        weights = [1.0] * window
-    
-    valid_positions = []
-    valid_weights = []
-    for p, w in zip(positions, weights):
-        if 0.001 < p < 0.999:
-            valid_positions.append(p)
-            valid_weights.append(w)
-    
-    if len(valid_positions) < 5:
-        return {'alpha': 1.0, 'beta': 1.0, 'valid': False}
-    
-    try:
-        a, b = beta_distribution_mle(valid_positions, valid_weights)
-        if 0.01 <= a <= 100 and 0.01 <= b <= 100:
-            return {'alpha': a, 'beta': b, 'valid': True, 'method': 'MLE'}
-    except Exception:
-        pass
-    
-    try:
-        mean = sum(p * w for p, w in zip(valid_positions, valid_weights)) / sum(valid_weights)
-        variance = sum(w * (p - mean)**2 for p, w in zip(valid_positions, valid_weights)) / sum(valid_weights)
-        if variance < mean * (1 - mean):
-            t = mean * (1 - mean) / variance - 1
-            a = mean * t
-            b = (1 - mean) * t
-            if 0.01 <= a <= 100 and 0.01 <= b <= 100:
-                return {'alpha': a, 'beta': b, 'valid': True, 'method': 'MoM'}
-    except Exception:
-        pass
-
-    mean_pos = sum(valid_positions) / len(valid_positions)
-    if mean_pos <= 0.5:
-        return {'alpha': 1.0, 'beta': 1.0 + 3.0 * (0.5 - mean_pos) * 2, 'valid': True, 'method': 'default'}
-    else:
-        return {'alpha': 1.0 + 3.0 * (mean_pos - 0.5) * 2, 'beta': 1.0, 'valid': True, 'method': 'default'}
-
-
-class MarketPressureStrategy(BaseStrategy):
-    """
-    Enhanced Market Pressure Strategy that integrates risk management.
-    
-    This strategy extends BaseStrategy and supports vectorized backtesting over one or 
-    multiple tickers. It calculates a market pressure indicator based on the normalized 
-    price position, volatility adjustment, and rolling Beta distribution estimation.
-    The resulting indicator is used to generate a raw trading signal (1 for buy, 
-    -1 for sell, and 0 for hold). The raw signal is then risk-managed using the RiskManager
-    to adjust for stop-loss and take-profit thresholds.
-    
-    The strategy returns a DataFrame containing price references, indicator values,
-    the raw and adjusted signals, and return metrics.
-    """
-    def __init__(self, db_config, params=None):
+    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the MarketPressureStrategy using database configuration and strategy parameters.
-        
+        Initialize the Enhanced Market Pressure Analysis Strategy.
+
         Args:
             db_config (DatabaseConfig): Database configuration settings.
-            params (dict, optional): Strategy-specific parameters.
+            params (Optional[Dict]): Strategy parameters. Expected keys include:
+                - 'window' (default: 20): Rolling window size for analysis
+                - 'volume_weighted' (default: True): Whether to weight by volume
+                - 'confidence_threshold' (default: 0.95): Statistical confidence threshold
+                - 'pressure_threshold' (default: 0.3): Threshold for pressure to generate signal
+                - 'long_only' (default: True): Whether to only take long positions
+                - 'use_multiple_dists' (default: False): Use multiple distributions
+                - 'stop_loss_pct' (default: 0.05): Stop loss percentage
+                - 'take_profit_pct' (default: 0.10): Take profit percentage
+                - 'slippage_pct' (default: 0.001): Slippage percentage
+                - 'transaction_cost_pct' (default: 0.001): Transaction cost percentage
         """
-        super().__init__(db_config, params)
-        defaults = {
-            'position_window': 20,
-            'volume_enabled': True,
-            'default_confidence': 0.7,
-            'signal_expiry': 3,
-            'risk_per_trade': 0.01,
-            'max_exposure': 0.04,
-            'lookback_vol': 20,
-            'lookback_z': 50,
-            'stop_loss_pct': 0.05,
-            'take_profit_pct': 0.10,
-            'slippage_pct': 0.001,
-            'transaction_cost_pct': 0.001
+        default_params = {
+            'window': 20, 
+            'volume_weighted': True,
+            'confidence_threshold': 0.95,
+            'pressure_threshold': 0.3,
+            'long_only': True,
+            'use_multiple_dists': False
         }
-        # Set any missing parameters to defaults.
-        self.params = {**defaults, **(params or {})}
-        self.risk_manager = RiskManager(
-            stop_loss_pct=self.params['stop_loss_pct'],
-            take_profit_pct=self.params['take_profit_pct'],
-            slippage_pct=self.params['slippage_pct'],
-            transaction_cost_pct=self.params['transaction_cost_pct']
-        )
+        params = params or default_params
+        super().__init__(db_config, params)
+        
+        # Initialize strategy parameters
+        self.window = int(params.get('window', default_params['window']))
+        self.volume_weighted = params.get('volume_weighted', default_params['volume_weighted'])
+        self.confidence_threshold = params.get('confidence_threshold', default_params['confidence_threshold'])
+        self.pressure_threshold = params.get('pressure_threshold', default_params['pressure_threshold'])
+        self.long_only = params.get('long_only', default_params['long_only'])
+        self.use_multiple_dists = params.get('use_multiple_dists', default_params['use_multiple_dists'])
+        
+        # Initialize logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Initialize RiskManager with risk parameters
+        risk_params = {
+            'stop_loss_pct': params.get('stop_loss_pct', 0.05),
+            'take_profit_pct': params.get('take_profit_pct', 0.10),
+            'slippage_pct': params.get('slippage_pct', 0.001),
+            'transaction_cost_pct': params.get('transaction_cost_pct', 0.001)
+        }
+        self.risk_manager = RiskManager(**risk_params)
     
     def generate_signals(
         self,
-        ticker,
-        start_date: str = None,
-        end_date: str = None,
+        ticker: Union[str, List[str]],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         initial_position: int = 0,
-        latest_only: bool = False
+        latest_only: bool = False,
     ) -> pd.DataFrame:
         """
-        Generate trading signals and compute risk-managed returns.
-        
-        For each ticker the following steps are performed:
-            1. Historical OHLC data is retrieved.
-            2. Advanced normalization is computed (norm_pos, vap, volatility, z_pos).
-            3. (If enabled) volume confidence weights are computed.
-            4. Over a rolling window (position_window), a Beta distribution is fitted 
-               to the normalized positions and used to derive:
-                   - buy_prob = 1 - BetaCDF(0.6, α, β)
-                   - sell_prob = BetaCDF(0.4, α, β)
-                   - pressure_ratio = (buy_prob - sell_prob) / (buy_prob + sell_prob)
-            5. A raw signal is generated based on whether the absolute pressure (confidence) 
-               exceeds the default threshold.
-            6. Daily returns and strategy returns are computed.
-            7. The RiskManager is applied to handle stop-loss/take-profit rules.
+        Generate trading signals based on the Enhanced Market Pressure Analysis.
         
         Args:
-            ticker (str or List[str]): Single ticker symbol or a list.
-            start_date (str, optional): Start date (YYYY-MM-DD).
-            end_date (str, optional): End date (YYYY-MM-DD).
-            initial_position (int): Starting position.
-            latest_only (bool): If True, only the final signal row is returned per ticker.
+            ticker (str or List[str]): Stock ticker symbol or list of tickers.
+            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+            initial_position (int): Starting trading position (default=0).
+            latest_only (bool): If True, returns only the final row (per ticker for multi-ticker scenarios).
             
         Returns:
-            pd.DataFrame: DataFrame containing price data, indicator values, trading signals, 
-                          return calculations and risk-managed returns.
+            pd.DataFrame: DataFrame containing signals and performance metrics.
         """
-        # Retrieve historical price data using the BaseStrategy method.
-        ohlc = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
-        dfs = []  # list for each ticker
-
-        # Handle single ticker vs. multiple tickers (multi-index DataFrame)
-        if isinstance(ticker, str):
-            ohlc['_ticker'] = ticker
-            groups = [(ticker, ohlc)]
-        else:
-            # In multiple-ticker case, the ohlc has a MultiIndex (ticker, date)
-            ohlc = ohlc.reset_index(level='ticker')
-            groups = list(ohlc.groupby('ticker'))
-        
-        # Process each ticker's group
-        for tk, group in groups:
-            group = group.sort_index()  # sort by date
-            group.index = pd.to_datetime(group.index)
+        try:
+            # Define lookback buffer to ensure we have enough data for the window
+            lookback_buffer = 2 * self.window
             
-            # Compute daily return (percentage change)
-            group['daily_return'] = group['close'].pct_change()
-            
-            # Compute advanced normalization for indicator calculations
-            norm_df = advanced_normalization(group, lookback_vol=self.params['lookback_vol'], lookback_z=self.params['lookback_z'])
-            group = group.join(norm_df)
-            
-            # Compute volume confidence weights if enabled and volume is available
-            if self.params['volume_enabled'] and 'volume' in group.columns:
-                vol_weights = transform_volume_confidence(group['volume'].tolist(), window=self.params['position_window'])
+            # Retrieve historical price data
+            if start_date and end_date:
+                data = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date, lookback=lookback_buffer)
             else:
-                vol_weights = [1.0] * len(group)
+                data = self.get_historical_prices(ticker, lookback=lookback_buffer)
+                data = data.sort_index()
             
-            # Initialize new indicator columns with NaN defaults.
-            group['buy_prob'] = np.nan
-            group['sell_prob'] = np.nan
-            group['pressure_ratio'] = np.nan
-            group['signal_confidence'] = np.nan
-            group['net_pressure'] = np.nan
-            group['indicator_direction'] = np.nan
-
-            norm_positions = group['norm_pos'].tolist()
-
-            # Rolling window calculation over the group
-            window = self.params['position_window']
-            for i in range(len(group)):
-                if i < window - 1:
-                    # Not enough data for a rolling window
-                    continue
-                window_norm = norm_positions[i - window + 1:i + 1]
-                window_vol = vol_weights[i - window + 1:i + 1]
-                distribution = compute_optimal_distribution(window_norm, window, volume_weights=window_vol)
-                if not distribution.get('valid', False):
-                    bp = 0.5
-                    sp = 0.5
-                else:
-                    a = distribution['alpha']
-                    b_param = distribution['beta']
-                    bp = 1 - beta.cdf(0.6, a, b_param)
-                    sp = beta.cdf(0.4, a, b_param)
-                denominator = bp + sp if (bp + sp) != 0 else 1e-9
-                pratio = (bp - sp) / denominator
-                confidence = abs(pratio)
-                direction = 'buying' if pratio > 0 else ('selling' if pratio < 0 else 'neutral')
-                group.iloc[i, group.columns.get_loc('buy_prob')] = bp
-                group.iloc[i, group.columns.get_loc('sell_prob')] = sp
-                group.iloc[i, group.columns.get_loc('pressure_ratio')] = pratio
-                group.iloc[i, group.columns.get_loc('signal_confidence')] = confidence
-                group.iloc[i, group.columns.get_loc('net_pressure')] = bp - sp
-                group.iloc[i, group.columns.get_loc('indicator_direction')] = direction
-
-            # Generate raw trading signal based on computed net_pressure (and minimum confidence threshold)
-            def derive_signal(row):
-                if pd.isna(row['signal_confidence']):
-                    return 0
-                if row['signal_confidence'] >= self.params['default_confidence']:
-                    return 1 if row['indicator_direction'] == 'buying' else -1
-                return 0
-            group['signal'] = group.apply(derive_signal, axis=1)
-            
-            # Calculate a simple strategy return: yesterday's signal times today's daily return.
-            group['strategy_return'] = group['daily_return'].shift(-1) * group['signal']
-            
-            # Apply risk management to generate risk–managed returns and positions.
-            rm_results = self.risk_manager.apply(group[['high', 'low', 'close', 'signal']].copy(), initial_position=initial_position)
-            # Rename risk manager outputs to avoid name collisions.
-            rm_results.rename(columns={
-                'return': 'rm_strategy_return',
-                'cumulative_return': 'rm_cumulative_return',
-                'exit_type': 'rm_action'
-            }, inplace=True)
-            group = group.join(rm_results[['position', 'rm_strategy_return', 'rm_cumulative_return', 'rm_action']])
-            
-            # Add ticker information
-            group['ticker'] = tk
-            dfs.append(group)
-        
-        result = pd.concat(dfs) if len(dfs) > 1 else dfs[0]
-        result.sort_index(inplace=True)
-        
-        # If only the latest signal is needed, filter to last row per ticker.
-        if latest_only:
-            if 'ticker' in result.columns:
-                result = result.groupby('ticker').tail(1)
+            # Process multiple tickers if provided
+            if isinstance(ticker, list):
+                signals_list = []
+                for t, group in data.groupby(level=0):
+                    if not self._validate_data(group, min_records=self.window):
+                        self.logger.warning(f"Insufficient data for {t}: required at least {self.window} records.")
+                        continue
+                    
+                    # Calculate signals for a single ticker
+                    sig = self._calculate_signals_single(group)
+                    
+                    # Apply risk management
+                    sig = self.risk_manager.apply(sig, initial_position)
+                    
+                    # Calculate performance metrics
+                    sig['daily_return'] = sig['close'].pct_change().fillna(0)
+                    sig['strategy_return'] = sig['daily_return'] * sig['position'].shift(1).fillna(0)
+                    
+                    # Rename risk-managed return columns for clarity
+                    sig.rename(columns={
+                        'return': 'rm_strategy_return',
+                        'cumulative_return': 'rm_cumulative_return',
+                        'exit_type': 'rm_action'
+                    }, inplace=True)
+                    
+                    # Add ticker column
+                    sig['ticker'] = t
+                    signals_list.append(sig)
+                
+                if not signals_list:
+                    return pd.DataFrame()
+                    
+                signals = pd.concat(signals_list)
+                
+                # If latest_only is True, take only the last row per ticker
+                if latest_only:
+                    signals = signals.groupby('ticker').tail(1)
             else:
-                result = result.tail(1)
+                # Process single ticker
+                if not self._validate_data(data, min_records=self.window):
+                    self.logger.warning(f"Insufficient data for {ticker}: required at least {self.window} records.")
+                    return pd.DataFrame()
+                
+                # Calculate signals for the single ticker
+                signals = self._calculate_signals_single(data)
+                
+                # Apply risk management
+                signals = self.risk_manager.apply(signals, initial_position)
+                
+                # Calculate performance metrics
+                signals['daily_return'] = signals['close'].pct_change().fillna(0)
+                signals['strategy_return'] = signals['daily_return'] * signals['position'].shift(1).fillna(0)
+                
+                # Rename risk-managed return columns
+                signals.rename(columns={
+                    'return': 'rm_strategy_return',
+                    'cumulative_return': 'rm_cumulative_return',
+                    'exit_type': 'rm_action'
+                }, inplace=True)
+                
+                # Return only the latest signal if requested
+                if latest_only:
+                    signals = signals.iloc[[-1]].copy()
+            
+            return signals
+            
+        except Exception as e:
+            self.logger.error(f"Error generating signals for {ticker}: {str(e)}")
+            return pd.DataFrame()
+    
+    def _calculate_signals_single(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate the Enhanced Market Pressure Analysis and corresponding trading signals for a single ticker.
         
-        return result
+        This method:
+        1. Calculates normalized positions of closes within their ranges
+        2. Applies statistical distribution modeling to these positions
+        3. Computes buying and selling pressure metrics
+        4. Detects divergences between price trends and pressure trends
+        5. Generates trading signals based on pressure and divergences
         
-
-# --- EXAMPLE USAGE (for testing/backtest) ---
-if __name__ == "__main__":
-    # For demonstration, create a random OHLCV dataset.
-    np.random.seed(42)
-    periods = 100
-    data = {
-        'open': np.random.uniform(100, 105, periods),
-        'high': np.random.uniform(105, 110, periods),
-        'low': np.random.uniform(95, 100, periods),
-        'close': np.random.uniform(100, 105, periods),
-        'volume': np.random.uniform(1000, 5000, periods),
-        'timestamp': pd.date_range(start="2025-03-01", periods=periods, freq="D")
-    }
-    ohlc_df = pd.DataFrame(data)
+        Args:
+            data (pd.DataFrame): Historical price data for a single ticker with OHLCV columns.
+            
+        Returns:
+            pd.DataFrame: DataFrame with calculated signals and metrics.
+        """
+        # Ensure data is sorted by date
+        data = data.sort_index()
+        df = data.copy()
+        
+        # Calculate normalized position: (close - low) / (high - low)
+        df['range'] = df['high'] - df['low']
+        df['norm_pos'] = np.where(
+            df['range'] > 0,
+            (df['close'] - df['low']) / df['range'],
+            0.5  # Default to middle when range is zero
+        )
+        
+        # Calculate volatility metrics
+        df['volatility'] = df['range'].rolling(window=self.window).std().fillna(0)
+        df['vol_ratio'] = df['volatility'] / df['volatility'].rolling(window=self.window).mean().replace(0, 1e-9).fillna(1)
+        
+        # Volatility-adjusted position
+        df['vap'] = df['norm_pos'] * (1 + df['vol_ratio'])
+        
+        # Z-score normalization of position
+        df['z_pos'] = (df['norm_pos'] - df['norm_pos'].rolling(window=self.window).mean()) / \
+                      df['norm_pos'].rolling(window=self.window).std().replace(0, 1e-9).fillna(1)
+        
+        # Initialize columns for pressure metrics
+        df['buying_pressure'] = np.nan
+        df['selling_pressure'] = np.nan
+        df['market_pressure'] = np.nan
+        df['pressure_significance'] = np.nan
+        
+        # Process data using vectorized operations where possible
+        buying_pressure = []
+        selling_pressure = []
+        market_pressure = []
+        pressure_significance = []
+        
+        # Suppress warnings from scipy during distribution fitting
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            
+            # Process each window
+            for i in range(self.window, len(df)):
+                window_data = df.iloc[i-self.window:i]
+                positions = window_data['norm_pos'].values
+                
+                # Weight by volume if specified
+                weights = None
+                if self.volume_weighted and 'volume' in window_data.columns:
+                    weights = window_data['volume'].values
+                    if np.sum(weights) > 0:
+                        weights = weights / np.sum(weights)
+                    else:
+                        weights = None
+                
+                # Fit distribution and calculate pressure
+                try:
+                    if self.use_multiple_dists:
+                        result = self._fit_multiple_distributions(positions, weights)
+                        if result:
+                            buy_p, sell_p, pressure, sig = result
+                        else:
+                            buy_p, sell_p, pressure, sig = self._fit_beta_pressure(positions, weights)
+                    else:
+                        buy_p, sell_p, pressure, sig = self._fit_beta_pressure(positions, weights)
+                        
+                    buying_pressure.append(buy_p)
+                    selling_pressure.append(sell_p)
+                    market_pressure.append(pressure)
+                    pressure_significance.append(sig)
+                except:
+                    # Default values if fitting fails
+                    buying_pressure.append(np.nan)
+                    selling_pressure.append(np.nan)
+                    market_pressure.append(np.nan)
+                    pressure_significance.append(np.nan)
+        
+            # Add calculated metrics to dataframe
+            if len(buying_pressure) > 0:
+                df.loc[df.index[self.window:], 'buying_pressure'] = buying_pressure
+                df.loc[df.index[self.window:], 'selling_pressure'] = selling_pressure
+                df.loc[df.index[self.window:], 'market_pressure'] = market_pressure
+                df.loc[df.index[self.window:], 'pressure_significance'] = pressure_significance
+        
+        # Calculate trends for divergence detection
+        df['price_trend'] = df['close'].pct_change(5).rolling(window=5).mean().fillna(0)
+        df['pressure_trend'] = df['market_pressure'].diff(5).rolling(window=5).mean().fillna(0)
+        
+        # Detect divergences
+        df['divergence'] = 0
+        bull_div = (df['price_trend'] < -0.01) & (df['pressure_trend'] > 0.01) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        bear_div = (df['price_trend'] > 0.01) & (df['pressure_trend'] < -0.01) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        df.loc[bull_div, 'divergence'] = 1
+        df.loc[bear_div, 'divergence'] = -1
+        
+        # Generate trading signals based on pressure and divergences
+        df['signal'] = 0
+        buy_conditions = (
+            (df['market_pressure'] > self.pressure_threshold) & 
+            (df['pressure_significance'] > self.confidence_threshold) &
+            (df['market_pressure'].shift(1) <= self.pressure_threshold)
+        ) | (
+            (df['divergence'] == 1) & 
+            (df['pressure_significance'] > self.confidence_threshold * 0.9)
+        )
+        
+        sell_conditions = (
+            (df['market_pressure'] < -self.pressure_threshold) & 
+            (df['pressure_significance'] > self.confidence_threshold) &
+            (df['market_pressure'].shift(1) >= -self.pressure_threshold)
+        ) | (
+            (df['divergence'] == -1) & 
+            (df['pressure_significance'] > self.confidence_threshold * 0.9)
+        )
+        
+        # Set signals
+        df.loc[buy_conditions, 'signal'] = 1
+        df.loc[sell_conditions, 'signal'] = -1
+        
+        # If long_only, convert sell signals to exit signals
+        if self.long_only:
+            df.loc[df['signal'] == -1, 'signal'] = 0
+        
+        # Set signal strength based on pressure and significance
+        df['signal_strength'] = 0.0
+        df.loc[buy_conditions | sell_conditions, 'signal_strength'] = (
+            df.loc[buy_conditions | sell_conditions, 'pressure_significance'] * 
+            df.loc[buy_conditions | sell_conditions, 'market_pressure'].abs()
+        )
+        
+        # Return the needed columns
+        return df[['open', 'close', 'high', 'low', 'norm_pos', 'market_pressure', 
+                   'pressure_significance', 'divergence', 'signal', 'signal_strength']]
     
-    # Assume an in-memory SQLite DB for demonstration (adjust DatabaseConfig accordingly)
-    from src.database.config import DatabaseConfig
-    db_config = DatabaseConfig.default()
+    def _fit_beta_pressure(self, positions, weights=None):
+        """
+        Fit a Beta distribution to positions and calculate pressure metrics.
+        
+        The Beta distribution is well-suited for modeling values in the [0,1] range,
+        which makes it ideal for our normalized positions.
+        
+        Args:
+            positions (np.array): Normalized positions in [0,1] range.
+            weights (np.array, optional): Weights for each position.
+            
+        Returns:
+            tuple: (buying_pressure, selling_pressure, market_pressure, significance)
+        """
+        # Clip values to ensure they're in the (0,1) range
+        positions = np.clip(positions, 1e-6, 1-1e-6)
+        
+        # Default equal weights if none provided
+        if weights is None:
+            weights = np.ones_like(positions) / len(positions)
+        
+        # Method of moments with weights
+        mean = np.sum(weights * positions)
+        var = np.sum(weights * (positions - mean)**2)
+        
+        # Safeguard against zero variance
+        var = max(var, 1e-9)
+        
+        # Compute alpha and beta parameters
+        alpha = mean * (mean * (1 - mean) / var - 1)
+        beta_param = (1 - mean) * (mean * (1 - mean) / var - 1)
+        
+        # Ensure parameters are positive
+        alpha = max(alpha, 0.01)
+        beta_param = max(beta_param, 0.01)
+        
+        # Calculate pressure metrics
+        buying_pressure = 1 - beta.cdf(0.5, alpha, beta_param)
+        selling_pressure = beta.cdf(0.5, alpha, beta_param)
+        market_pressure = buying_pressure - selling_pressure
+        
+        # Calculate statistical significance
+        try:
+            # Use KS test for significance
+            ks_stat, p_value = kstest(positions, 'beta', args=(alpha, beta_param))
+            significance = 1 - p_value
+        except:
+            # Fallback to a simplified method if KS test fails
+            significance = 1 - np.min([1.0, np.std(positions) / 0.2889])  # 0.2889 is std of uniform dist on [0,1]
+        
+        return buying_pressure, selling_pressure, market_pressure, significance
     
-    # Here we simulate storing the data into your database,
-    # but for backtesting one might use get_historical_prices. This demo bypasses the DB.
-    # Instead, we directly pass the ohlc_df as if it were returned by get_historical_prices.
-    # (In real use, ensure your daily_prices table has corresponding data.)
-    
-    # Instantiate the strategy.
-    strategy = MarketPressureStrategy(db_config)
-    
-    # For demonstration purposes, we simulate a single-ticker backtest.
-    # In real use, the historical data is pulled from the database.
-    # Here, we temporarily override get_historical_prices.
-    strategy.get_historical_prices = lambda tickers, **kwargs: ohlc_df.set_index('timestamp')
-    
-    # Generate the full backtest signals.
-    signals_df = strategy.generate_signals("DEMO", start_date="2025-03-01", end_date="2025-06-01", initial_position=0)
-    
-    print("Full Backtest Signals:")
-    print(signals_df.tail(10))
-    
-    # Generate signal for the most recent date only.
-    latest_signal = strategy.generate_signals("DEMO", start_date="2025-03-01", end_date="2025-06-01", initial_position=0, latest_only=True)
-    print("\nLatest Signal:")
-    print(latest_signal)
+    def _fit_multiple_distributions(self, positions, weights=None):
+        """
+        Fit multiple distributions and select the best one based on fit quality.
+        
+        This method tries both Beta distribution and transformed Normal distribution,
+        then selects the one that provides the better statistical fit to the data.
+        
+        Args:
+            positions (np.array): Normalized positions in [0,1] range.
+            weights (np.array, optional): Weights for each position.
+            
+        Returns:
+            tuple: (buying_pressure, selling_pressure, market_pressure, significance)
+                  or None if fitting fails
+        """
+        try:
+            # Fit Beta distribution
+            beta_result = self._fit_beta_pressure(positions, weights)
+            
+            # Fit transformed Normal distribution (logit transformation)
+            transformed = -np.log(1/np.clip(positions, 1e-6, 1-1e-6) - 1)
+            
+            # Default equal weights if none provided
+            if weights is None:
+                weights = np.ones_like(positions) / len(positions)
+            
+            # Fit normal to transformed data
+            mean = np.sum(weights * transformed)
+            var = np.sum(weights * (transformed - mean)**2)
+            std = np.sqrt(max(var, 1e-9))
+            
+            # Calculate pressure in transformed space
+            # 0.5 in [0,1] space maps to 0 in transformed space
+            norm_buying_pressure = 1 - norm.cdf(0, mean, std)
+            norm_selling_pressure = norm.cdf(0, mean, std)
+            norm_market_pressure = norm_buying_pressure - norm_selling_pressure
+            
+            # Calculate significance
+            try:
+                ks_stat, p_value = kstest(transformed, 'norm', args=(mean, std))
+                norm_significance = 1 - p_value
+            except:
+                norm_significance = 0.5
+            
+            # Select the distribution with better fit (higher significance)
+            if norm_significance > beta_result[3]:
+                return norm_buying_pressure, norm_selling_pressure, norm_market_pressure, norm_significance
+            else:
+                return beta_result
+        except:
+            return None
