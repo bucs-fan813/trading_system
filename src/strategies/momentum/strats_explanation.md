@@ -1,6 +1,6 @@
 # Trading Strategies Explanation
 
-This document provides an overview of the trading strategies implemented in this repository. For each strategy, the key formulas and signal generation logic are explained. **Note:** If you use this Markdown file on GitHub, keep in mind that the LaTeX math (delimited by `$$`) may not render by default. To view well‐rendered math, consider using GitHub Pages with MathJax/KaTeX enabled or a compatible Markdown viewer.
+This document provides an overview of the trading strategies implemented in this repository. For each strategy, the key formulas and signal generation logic are explained.
 
 ---
 
