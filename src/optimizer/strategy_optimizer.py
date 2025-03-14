@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Type, Tuple
+import mlflow
+from hyperopt import fmin, tpe, Trials, STATUS_OK, space_eval													 
 
-from hyperopt import fmin, tpe, Trials, STATUS_OK, space_eval
-
-# Import PerformanceEvaluator from our previously defined module.
+																 
 from src.optimizer.performance_evaluator import PerformanceEvaluator
 
 # Configure module-level logger.
@@ -19,7 +19,7 @@ class StrategyOptimizer:
     """
     Universal optimizer using walk-forward analysis (time-series cross-validation) 
     combined with hyperparameter search using Hyperopt to fine-tune trading strategy 
-    parameters.
+    parameters.	   
     """
 
     def __init__(
@@ -51,7 +51,7 @@ class StrategyOptimizer:
             cv_folds (int): Number of folds for walk-forward cross-validation.
             risk_thresholds (Optional[Dict[str, float]]): Dictionary of risk thresholds.
             max_evals (int): Maximum number of evaluations for hyperparameter search.
-        """
+        """ 
         self.strategy_class = strategy_class
         self.db_config = db_config
         self.search_space = search_space
@@ -59,19 +59,19 @@ class StrategyOptimizer:
         self.start_date = start_date
         self.end_date = end_date
         
-        # Initialize ticker weights
+        # Initialize ticker weights.
         self.ticker_weights = ticker_weights
         if self.ticker_weights is None:
-            # If no weights provided, use equal weights
+													   
             self.ticker_weights = {ticker: 1.0 / len(tickers) for ticker in tickers}
         else:
-            # Normalize weights to sum to 1
+            # Normalize to sum to 1.
             total_weight = sum(self.ticker_weights.values())
             if total_weight != 1.0:
-                self.ticker_weights = {ticker: weight / total_weight 
-                                      for ticker, weight in self.ticker_weights.items()}
-            
-            # Ensure all tickers have a weight, default to 0 for missing tickers
+                self.ticker_weights = {ticker: weight / total_weight for ticker, weight in self.ticker_weights.items()}
+																						
+			
+			# Ensure all tickers have a weight, default to 0 for missing tickers																	
             for ticker in tickers:
                 if ticker not in self.ticker_weights:
                     self.ticker_weights[ticker] = 0.0
@@ -86,8 +86,8 @@ class StrategyOptimizer:
             'annualized_volatility': 0.4   # Annualized volatility threshold.
         }
         self.logger = logging.getLogger(self.__class__.__name__)
-        
-        # Cache for evaluation results
+		
+									  
         self._evaluation_cache = {}
 
     def _generate_signals_batch(
@@ -108,7 +108,7 @@ class StrategyOptimizer:
             Dict[str, pd.DataFrame]: Dictionary mapping ticker symbols to their signal DataFrames.
         """
         try:
-            # Generate signals for all tickers at once
+													  
             df_signals = strategy_instance.generate_signals(
                 ticker=self.tickers,
                 start_date=fold_start.strftime("%Y-%m-%d"),
@@ -116,36 +116,23 @@ class StrategyOptimizer:
                 initial_position=self.initial_position,
                 latest_only=False
             )
-            
-            # Check if we got a multi-index DataFrame with tickers
-            if isinstance(df_signals.index, pd.MultiIndex) and df_signals.index.nlevels > 1:
-                # Split into dictionary by ticker
-                signals_dict = {ticker: df.reset_index(level=0, drop=True) 
-                               for ticker, df in df_signals.groupby(level=0)}
-            else:
-                # If the strategy returned a single DataFrame but we expected multiple,
-                # assume it's for a single ticker (for compatibility)
+            							  
+            if isinstance(df_signals.index, pd.MultiIndex) and df_signals.index.nlevels > 1:				 
+                signals_dict = {ticker: df.reset_index(level=0, drop=True) for ticker, df in df_signals.groupby(level=0)}								 
+            else:											 
                 if len(self.tickers) == 1:
                     signals_dict = {self.tickers[0]: df_signals}
                 else:
-                    self.logger.warning(
-                        "Strategy returned a single DataFrame but multiple tickers were requested."
-                    )
+                    self.logger.warning("Strategy returned a single DataFrame but multiple tickers were requested.")
                     signals_dict = {}
-                    
-            # Validate signals and add missing position column if needed
+                    											
             for ticker, df in list(signals_dict.items()):
-                if df.empty:
-                    self.logger.warning(
-                        "No signal data for ticker %s from %s to %s.",
-                        ticker,
-                        fold_start.date(),
-                        fold_end.date()
-                    )
+                if df.empty:				
+                    self.logger.warning("No signal data for ticker %s from %s to %s.", ticker, fold_start.date(), fold_end.date())
                     signals_dict.pop(ticker)
                     continue
-                    
-                # Fallback: if a 'position' column is missing, try to use 'signal' as a proxy.
+
+                # Fallback: if a 'position' column is missing, try to use 'signal' as a proxy.																										  
                 if 'position' not in df.columns:
                     df['position'] = df.get('signal', 0)
                 if 'close' not in df.columns:
@@ -174,7 +161,7 @@ class StrategyOptimizer:
                 weighted_metrics (Dict[str, float]): Weighted average metrics across tickers.
                 overall_hm (float): Overall harmonic mean.
         """
-        # Check cache first
+		# Check cache first				   
         params_key = str(sorted(params.items()))
         if params_key in self._evaluation_cache:
             return self._evaluation_cache[params_key]
@@ -184,7 +171,7 @@ class StrategyOptimizer:
         total_days = (end_dt - start_dt).days
         fold_length = total_days // self.cv_folds
 
-        # Dictionary to accumulate signals for each ticker across folds
+		# Dictionary to accumulate signals for each ticker across folds															   
         all_signals = {ticker: [] for ticker in self.tickers}
 
         for fold in range(self.cv_folds):
@@ -193,24 +180,24 @@ class StrategyOptimizer:
                         if fold < self.cv_folds - 1 else end_dt)
             self.logger.info("Fold %d from %s to %s", fold + 1, fold_start.date(), fold_end.date())
 
-            # Create a new strategy instance for the current fold
+			# Create a new strategy instance for the current fold													 
             strategy_instance = self.strategy_class(self.db_config, params)
-            
-            # Generate signals for all tickers at once
+			
+			# Generate signals for all tickers at once										  
             signals_dict = self._generate_signals_batch(strategy_instance, fold_start, fold_end)
             
-            # Accumulate signals for each ticker
+			# Accumulate signals for each ticker									
             for ticker, signals in signals_dict.items():
                 if not signals.empty:
                     all_signals[ticker].append(signals)
                     
-        # Combine signals across folds
+		# Combine signals across folds							  
         combined_signals = {}
         for ticker, signals_list in all_signals.items():
             if signals_list:
                 combined_signals[ticker] = pd.concat(signals_list).sort_index()
                 
-        # Calculate metrics for all tickers
+		# Calculate metrics for all tickers								   
         if not combined_signals:
             return {}, {}, 0.0
             
@@ -220,7 +207,7 @@ class StrategyOptimizer:
         
         overall_hm = weighted_metrics.get('harmonic_mean', 0.0)
         
-        # Cache the results
+		# Cache the results				   
         self._evaluation_cache[params_key] = (ticker_metrics, weighted_metrics, overall_hm)
         
         return ticker_metrics, weighted_metrics, overall_hm
@@ -235,31 +222,38 @@ class StrategyOptimizer:
         Returns:
             Dict[str, Any]: Dictionary with keys 'loss', 'status', 'metrics' for Hyperopt.
         """
-        ticker_metrics, weighted_metrics, overall_hm = self.walk_forward_cv(params)
-        
-        # Calculate penalty based on weighted metrics
-        penalty = 0
-        
-        # Add penalties based on risk metric violations in weighted metrics
-        if weighted_metrics.get('max_drawdown', 0) < self.risk_thresholds['max_drawdown']:
-            penalty += abs(weighted_metrics['max_drawdown'] - self.risk_thresholds['max_drawdown'])
+        with mlflow.start_run(nested=True, run_name="Hyperopt_Trial"):
+            mlflow.set_tag("strategy_class", self.strategy_class.__name__)
+            mlflow.log_params(params)
+            ticker_metrics, weighted_metrics, overall_hm = self.walk_forward_cv(params)
+		
+			# Calculate penalty based on weighted metrics												   
+            penalty = 0
+			
+			# Add penalties based on risk metric violations in weighted me
+            if weighted_metrics.get('max_drawdown', 0) < self.risk_thresholds['max_drawdown']:
+                penalty += abs(weighted_metrics['max_drawdown'] - self.risk_thresholds['max_drawdown'])
+				
+            if weighted_metrics.get('drawdown_duration', 0) > self.risk_thresholds['drawdown_duration']:
+                penalty += (weighted_metrics['drawdown_duration'] - self.risk_thresholds['drawdown_duration']) * 0.01
+				
+            if weighted_metrics.get('ulcer_index', 0) > self.risk_thresholds['ulcer_index']:
+                penalty += (weighted_metrics['ulcer_index'] - self.risk_thresholds['ulcer_index'])
+				
+            if weighted_metrics.get('annualized_volatility', 0) > self.risk_thresholds['annualized_volatility']:
+                penalty += (weighted_metrics['annualized_volatility'] - self.risk_thresholds['annualized_volatility'])
             
-        if weighted_metrics.get('drawdown_duration', 0) > self.risk_thresholds['drawdown_duration']:
-            penalty += (weighted_metrics['drawdown_duration'] - self.risk_thresholds['drawdown_duration']) * 0.01
-            
-        if weighted_metrics.get('ulcer_index', 0) > self.risk_thresholds['ulcer_index']:
-            penalty += (weighted_metrics['ulcer_index'] - self.risk_thresholds['ulcer_index'])
-            
-        if weighted_metrics.get('annualized_volatility', 0) > self.risk_thresholds['annualized_volatility']:
-            penalty += (weighted_metrics['annualized_volatility'] - self.risk_thresholds['annualized_volatility'])
-        
-        objective_score = overall_hm - penalty
-        return {
-            'loss': -objective_score, 
-            'status': STATUS_OK, 
-            'ticker_metrics': ticker_metrics,
-            'weighted_metrics': weighted_metrics
-        }
+            objective_score = overall_hm - penalty
+            mlflow.log_metric("overall_harmonic_mean", overall_hm)
+            mlflow.log_metric("penalty", penalty)
+            mlflow.log_metric("objective_score", objective_score)
+											  
+            return {
+                'loss': -objective_score, 
+                'status': STATUS_OK, 
+                'ticker_metrics': ticker_metrics,
+                'weighted_metrics': weighted_metrics
+            }
 
     def run_optimization(self) -> Tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]:
         """
@@ -271,67 +265,70 @@ class StrategyOptimizer:
                 ticker_performance (pd.DataFrame): Performance metrics for each ticker.
                 param_history (pd.DataFrame): History of parameter evaluations.
         """
-        trials = Trials()
-        best = fmin(
-            fn=self._objective_function,
-            space=self.search_space,
-            algo=tpe.suggest,
-            max_evals=self.max_evals,
-            trials=trials
-        )
-        
-        # Convert hyperopt format to readable parameters
-        best_params = space_eval(self.search_space, best)
-
-        # Evaluate the strategy over the full period using the best parameters
-        ticker_metrics, weighted_metrics, _ = self.walk_forward_cv(best_params)
-
-        # Try to retrieve company info for all tickers
-        strategy_instance = self.strategy_class(self.db_config, best_params)
-        try:
-            company_info = strategy_instance.get_company_info(self.tickers)
-            if isinstance(company_info, pd.Series):
-                company_info = company_info.to_frame().T
-        except Exception as e:
-            self.logger.error("Error retrieving company info: %s", str(e))
-            company_info = pd.DataFrame()
-
-        # Build detailed ticker performance report
-        report_rows = []
-        for ticker, metrics in ticker_metrics.items():
-            row = {'ticker': ticker, 'weight': self.ticker_weights.get(ticker, 0)}
-            row.update(metrics)
-            if (not company_info.empty) and (ticker in company_info.index):
-                info = company_info.loc[ticker]
-                for col in ['industry', 'industrykey', 'industrydisp', 'sector', 'sectorkey', 'sectordisp']:
-                    row[col] = info.get(col, None)
-            report_rows.append(row)
+        with mlflow.start_run(run_name="StrategyOptimization"):
+            trials = Trials()
+            best = fmin(
+                fn=self._objective_function,
+                space=self.search_space,
+                algo=tpe.suggest,
+                max_evals=self.max_evals,
+                trials=trials
+            )
+											
+            best_params = space_eval(self.search_space, best)
+            mlflow.set_tag("best_strategy_class", self.strategy_class.__name__)
+            mlflow.log_params(best_params)
             
-        # Add weighted average row
-        weighted_row = {'ticker': 'WEIGHTED_AVG', 'weight': 1.0}
-        weighted_row.update(weighted_metrics)
-        report_rows.append(weighted_row)
-        
-        ticker_performance = pd.DataFrame(report_rows).set_index('ticker')
-        
-        # Create parameter history DataFrame from trials
-        param_history = []
-        for trial_idx, trial in enumerate(trials.trials):
-            if trial['result']['status'] == 'ok':
-                row = {'trial': trial_idx}
-                # Extract parameter values
-                params = space_eval(self.search_space, trial['misc']['vals'])
-                row.update(params)
-                # Extract metrics
-                row.update({
-                    'harmonic_mean': trial['result']['weighted_metrics'].get('harmonic_mean', 0),
-                    'objective_score': -trial['result']['loss'],
-                })
-                param_history.append(row)
+            # Evaluate strategy with the best parameters over the full period.
+            ticker_metrics, weighted_metrics, _ = self.walk_forward_cv(best_params)
+            mlflow.log_metrics({"final_overall_harmonic_mean": weighted_metrics.get('harmonic_mean', 0.0)})
+													  				   
+			# Try to retrieve company info for all tickers
+            try:
+                strategy_instance = self.strategy_class(self.db_config, best_params)
+                company_info = strategy_instance.get_company_info(self.tickers)
+                if isinstance(company_info, pd.Series):
+                    company_info = company_info.to_frame().T
+            except Exception as e:
+                self.logger.error("Error retrieving company info: %s", str(e))
+                company_info = pd.DataFrame()
+			# Build detailed ticker performance report									  
+            report_rows = []
+            for ticker, metrics in ticker_metrics.items():
+                row = {'ticker': ticker, 'weight': self.ticker_weights.get(ticker, 0)}
+																	 
+                row.update(metrics)
+                if (not company_info.empty) and (ticker in company_info.index):
+                    info = company_info.loc[ticker]
+                    for col in ['industry', 'industrykey', 'industrydisp', 'sector', 'sectorkey', 'sectordisp']:
+                        row[col] = info.get(col, None)
+				  
+                report_rows.append(row)
                 
-        param_history_df = pd.DataFrame(param_history)
-        
-        return best_params, ticker_performance, param_history_df
+            weighted_row = {'ticker': 'WEIGHTED_AVG', 'weight': 1.0}
+            weighted_row.update(weighted_metrics)
+            report_rows.append(weighted_row)
+            
+            ticker_performance = pd.DataFrame(report_rows).set_index('ticker')
+            
+            param_history = []
+            for trial_idx, trial in enumerate(trials.trials):
+                if trial['result']['status'] == 'ok':
+                    row = {'trial': trial_idx}
+                    params_trial = space_eval(self.search_space, trial['misc']['vals'])
+                    row.update(params_trial)
+                    row.update({
+                        'harmonic_mean': trial['result']['weighted_metrics'].get('harmonic_mean', 0),
+                        'objective_score': -trial['result']['loss'],
+                    })
+                    param_history.append(row)
+                    
+            param_history_df = pd.DataFrame(param_history)
+            
+            param_history_df.to_csv("param_history.csv", index=False)
+            mlflow.log_artifact("param_history.csv")
+            
+            return best_params, ticker_performance, param_history_df
         
     def get_evaluation_cache(self) -> Dict[str, Tuple]:
         """

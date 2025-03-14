@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
+import mlflow
 
 # Configure module-level logger.
 logger = logging.getLogger(__name__)
@@ -91,6 +92,11 @@ class PerformanceEvaluator:
             'annualized_volatility': ann_vol,
             'ulcer_index': ulcer_index
         }
+
+        # Optionally log the metrics (prefixed) if an mlflow run is active.
+        if mlflow.active_run():
+            mlflow.log_metrics({f"pe_{k}": v for k, v in metrics.items()})
+
         return metrics
 
     @staticmethod

@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Any, Dict, List, Optional, Tuple
+import mlflow
 
 # Configure module-level logger.
 logger = logging.getLogger(__name__)
@@ -79,23 +80,23 @@ class SensitivityAnalyzer:
         for sample_idx, params in enumerate(perturbed_samples):
             self.logger.info(f"Evaluating sample {sample_idx+1}/{self.num_samples}")
             
-            # Reuse optimizer's walk_forward_cv to evaluate perturbed parameters
-            ticker_metrics, weighted_metrics, overall_hm = self.optimizer.walk_forward_cv(params)
-            
-            # Create a row with parameters and metrics
-            row = {'sample': sample_idx}
-            
-            # Add parameter values
-            for param_name, param_value in params.items():
-                row[f"param_{param_name}"] = param_value
+            with mlflow.start_run(nested=True, run_name=f"Sensitivity_sample_{sample_idx+1}"):
+                # Evaluate the perturbed parameters.
+                ticker_metrics, weighted_metrics, overall_hm = self.optimizer.walk_forward_cv(params)				
                 
-            # Add key metrics from weighted average
-            for metric_name, metric_value in weighted_metrics.items():
-                row[f"metric_{metric_name}"] = metric_value
+                # Create a result row with parameters and key metrics.
+                row = {'sample': sample_idx}
+                for param_name, param_value in params.items():
+                    row[f"param_{param_name}"] = param_value
+                for metric_name, metric_value in weighted_metrics.items():
+                    row[f"metric_{metric_name}"] = metric_value
+                row['overall_harmonic_mean'] = overall_hm
+
+                # Log this trial’s parameters and metrics.
+                mlflow.log_params({f"param_{k}": v for k, v in params.items()})
+                mlflow.log_metrics({f"metric_{k}": v for k, v in weighted_metrics.items()})
+                mlflow.log_metric("overall_harmonic_mean", overall_hm)
                 
-            # Add the overall harmonic mean
-            row['overall_harmonic_mean'] = overall_hm
-            
             sensitivity_results.append(row)
             
         # Create sensitivity results DataFrame
