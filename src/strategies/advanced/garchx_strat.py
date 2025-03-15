@@ -1,76 +1,80 @@
 """
 GARCH‑X Strategy Implementation
 
-This module implements a GARCH‑X based strategy that preprocesses OHLCV data to
-generate features, fits a GARCH‑X model to forecast returns 30 days ahead, and then
-generates trading signals. The signal is set to +1 if the forecasted return is positive
-(and volume is strong), –1 if the forecast is negative (with strong volume), and 0 otherwise.
-Risk management (stop loss, take profit, slippage and transaction cost adjustments) is
-applied via the RiskManager.
+This module implements a GARCH‑X strategy that:
+   - Preprocesses OHLCV data by computing log returns, standardizing volume, calculating price ranges,
+     generating lag features, and deriving volatility proxies (using both Parkinson and Yang–Zhang methods).
+   - Uses a rolling forecast origin: for each day (when sufficient historical data is available), the preceding
+     forecast lookback window is used to recalibrate an EGARCH‑X model.
+   - Dynamically selects the best model configuration by trying several candidate orders (using AIC) on an EGARCH model
+     with an ARX component in the mean, Student’s t‑errors, and PCA on exogenous regressors to reduce collinearity.
+   - Avoids look‐ahead bias by applying winsorization strictly within the training sample for each forecast.
+   - Generates risk‑adjusted trading signals by normalizing the cumulative forecast return by forecast volatility,
+     and then scaling it by the latest standardized volume.
+   - Provides a fallback to an EWMA forecast if the EGARCH‑X model cannot be fitted.
+   - Optionally computes position sizing based on forecast volatility and allocated capital.
+   - Supports multi-ticker processing using joblib parallelization.
 
-The preprocessing steps include:
-    1. Log returns transformation.
-    2. Volume preprocessing: log transformation, standardization over a 20‑day window,
-       and volume ratio calculation.
-    3. Price range variables: normalized high‑low and open‑close ranges.
-    4. Lagged features for returns, standardized volume, and volatility proxies (normalized range).
-    5. Winsorization of extreme values at the 1% and 99% levels.
-    6. Partitioning of the backtest period into blocks and for each block a GARCH‑X model
-       is fitted (using exogenous lag features) to generate a 30‑day forecast.
-    7. Signals are generated only if the forecast (averaged over 30 days) is directional
-       AND the “volume strength” (last vol_z value) exceeds a minimum threshold.
-       
-The strategy is built to process a list of tickers and returns a full DataFrame including
-raw prices, forecast information, raw signal and risk‐managed positions & returns.
+The resulting DataFrame includes:
+   open, high, low, close, forecast_return, signal, signal_strength, position_size.
+
+Risk management (including stop loss, take profit, slippage, and transaction cost adjustments) is applied
+using the RiskManager.
 """
 
+import os
 import numpy as np
 import pandas as pd
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, Union, List, Tuple
 
 from arch import arch_model
+from sklearn.decomposition import PCA
+from joblib import Parallel, delayed
 
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
-
 
 class GarchXStrategy(BaseStrategy):
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
         Initialize the GARCH‑X Strategy.
 
-        Expected params keys include:
-            - 'forecast_horizon': int, forecast days ahead (default: 30)
-            - 'forecast_lookback': int, lookback window (default: 200)
-            - 'min_volume_strength': float, minimum vol_z threshold for signal (default: 1.0)
-            - 'long_only': bool, whether to allow only long positions (default: True)
-            - risk management parameters:
-                * 'stop_loss_pct' (default: 0.05)
-                * 'take_profit_pct' (default: 0.10)
-                * 'slippage_pct' (default: 0.001)
-                * 'transaction_cost_pct' (default: 0.001)
+        Parameters:
+            db_config (DatabaseConfig): The configuration for database connectivity.
+            params (Optional[Dict]): Dictionary of parameters. Expected keys include:
+                - 'forecast_horizon': int, forecast days ahead (default: 30)
+                - 'forecast_lookback': int, lookback window for training (default: 200)
+                - 'min_volume_strength': float, minimum standardized volume (vol_z) threshold to trigger a signal (default: 1.0)
+                - 'long_only': bool, whether to allow only long positions (default: True)
+                - 'capital': float, capital allocated for position sizing (default: 1.0)
+                - Risk parameters:
+                    * 'stop_loss_pct' (default: 0.05)
+                    * 'take_profit_pct' (default: 0.10)
+                    * 'slippage_pct' (default: 0.001)
+                    * 'transaction_cost_pct' (default: 0.001)
         """
         default_params = {
             'forecast_horizon': 30,
             'forecast_lookback': 200,
             'min_volume_strength': 1.0,
             'long_only': True,
+            'capital': 1.0,
             # Risk parameters
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
         }
-        # Merge default params with user-supplied parameters.
         default_params.update(params or {})
         super().__init__(db_config, default_params)
         self.forecast_horizon = int(self.params.get('forecast_horizon'))
         self.forecast_lookback = int(self.params.get('forecast_lookback'))
         self.min_volume_strength = float(self.params.get('min_volume_strength'))
+        self.long_only = bool(self.params.get('long_only'))
+        self.capital = float(self.params.get('capital'))
 
-        # Initialize RiskManager with provided risk parameters.
         risk_params = {
             'stop_loss_pct': self.params.get('stop_loss_pct'),
             'take_profit_pct': self.params.get('take_profit_pct'),
@@ -79,6 +83,9 @@ class GarchXStrategy(BaseStrategy):
         }
         self.risk_manager = RiskManager(**risk_params)
         self.logger = logging.getLogger(self.__class__.__name__)
+        # Create the folder for storing model configuration files if it does not exist.
+        self.model_config_folder = os.path.join("trading_system", "models", "garchx")
+        os.makedirs(self.model_config_folder, exist_ok=True)
 
     def generate_signals(
         self,
@@ -89,27 +96,31 @@ class GarchXStrategy(BaseStrategy):
         latest_only: bool = False,
     ) -> pd.DataFrame:
         """
-        Generate trading signals using the GARCH‑X model.
+        Generate trading signals by applying the GARCH‑X model on historical price data.
 
-        When start_date and end_date are provided (backtesting mode), the historical data
-        are partitioned into blocks of length forecast_horizon, and for each block a rolling
-        forecast is computed.
+        The method:
+          - Retrieves and preprocesses historical OHLCV data.
+          - For single or multiple tickers, calculates model forecasts using either a rolling window approach or
+            a single forecast based on the latest available data.
+          - Applies risk management adjustments and computes additional performance metrics.
 
-        When latest_only is True, only the latest forecast is computed based on the most recent
-        forecast_lookback days.
-
-        After the raw signals are computed, risk management is applied to compute positions,
-        returns, and exit events.
+        Parameters:
+            ticker (str or List[str]): Ticker symbol(s) for which signals are generated.
+            start_date (Optional[str]): Start date for backtesting (if applicable).
+            end_date (Optional[str]): End date for backtesting (if applicable).
+            initial_position (int): Initial position count for risk management adjustments.
+            latest_only (bool): If True, compute forecast only for the most recent data point.
 
         Returns:
-            pd.DataFrame: DataFrame containing open, high, low, close prices,
-                          forecast_return, signal, signal_strength, and performance metrics.
+            pd.DataFrame: DataFrame containing columns:
+                - open, high, low, close
+                - forecast_return, signal, signal_strength, position_size
+              along with additional performance metrics.
         """
         try:
-            # Determine a lookback buffer based on the forecast_lookback period.
+            # Define a lookback buffer to ensure sufficient historical data is available for model calibration.
             lookback_buffer = max(self.forecast_lookback, self.forecast_horizon) + 10
 
-            # Retrieve historical price data via the base class.
             if start_date and end_date:
                 data = self.get_historical_prices(
                     ticker, from_date=start_date, to_date=end_date, lookback=lookback_buffer
@@ -118,35 +129,17 @@ class GarchXStrategy(BaseStrategy):
                 data = self.get_historical_prices(ticker, lookback=lookback_buffer)
                 data = data.sort_index()
 
-            # Process single ticker or multiple tickers separately.
+            # Handle processing for either single or multiple tickers.
             if isinstance(ticker, list):
-                signals_list = []
-                for t, group in data.groupby(level=0):
-                    if not self._validate_data(group, min_records=self.forecast_lookback):
-                        self.logger.warning(
-                            f"Insufficient data for {t}: requires at least {self.forecast_lookback} records."
-                        )
-                        continue
-                    sig = self._calculate_signals_single(group, latest_only)
-                    # Apply risk management.
-                    sig = self.risk_manager.apply(sig, initial_position)
-                    # Compute performance metrics.
-                    sig['daily_return'] = sig['close'].pct_change().fillna(0)
-                    sig['strategy_return'] = sig['daily_return'] * sig['position'].shift(1).fillna(0)
-                    # Rename risk-managed columns.
-                    sig.rename(
-                        columns={'return': 'rm_strategy_return',
-                                 'cumulative_return': 'rm_cumulative_return',
-                                 'exit_type': 'rm_action'},
-                        inplace=True,
-                    )
-                    # Insert ticker identifier.
-                    sig['ticker'] = t
-                    signals_list.append(sig)
+                # Utilize joblib parallel processing to compute signals for multiple tickers concurrently.
+                signals_list = Parallel(n_jobs=-1)(
+                    delayed(self._calculate_signals_single)(group, latest_only)
+                    for t, group in data.groupby(level=0)
+                )
+                signals_list = [sig for sig in signals_list if not sig.empty]
                 if not signals_list:
                     return pd.DataFrame()
                 signals = pd.concat(signals_list)
-                # If latest_only is specified, return only the last row per ticker.
                 if latest_only:
                     signals = signals.groupby('ticker').tail(1)
             else:
@@ -155,20 +148,18 @@ class GarchXStrategy(BaseStrategy):
                         f"Insufficient data for {ticker}: requires at least {self.forecast_lookback} records."
                     )
                     return pd.DataFrame()
-                sig = self._calculate_signals_single(data, latest_only)
-                sig = self.risk_manager.apply(sig, initial_position)
-                sig['daily_return'] = sig['close'].pct_change().fillna(0)
-                sig['strategy_return'] = sig['daily_return'] * sig['position'].shift(1).fillna(0)
-                sig.rename(
-                    columns={'return': 'rm_strategy_return',
-                             'cumulative_return': 'rm_cumulative_return',
-                             'exit_type': 'rm_action'},
-                    inplace=True,
-                )
-                if latest_only:
-                    sig = sig.iloc[[-1]].copy()
-                signals = sig
-
+                signals = self._calculate_signals_single(data, latest_only)
+            # Apply risk management adjustments including position sizing, calculated returns, and exit actions.
+            signals = self.risk_manager.apply(signals, initial_position)
+            # Calculate daily returns and overall strategy performance metrics.
+            signals['daily_return'] = signals['close'].pct_change().fillna(0)
+            signals['strategy_return'] = signals['daily_return'] * signals['position'].shift(1).fillna(0)
+            signals.rename(
+                columns={'return': 'rm_strategy_return',
+                         'cumulative_return': 'rm_cumulative_return',
+                         'exit_type': 'rm_action'},
+                inplace=True,
+            )
             return signals
 
         except Exception as e:
@@ -177,204 +168,237 @@ class GarchXStrategy(BaseStrategy):
 
     def _calculate_signals_single(self, data: pd.DataFrame, latest_only: bool) -> pd.DataFrame:
         """
-        Calculate the raw forecast and trading signals for a single ticker's historical data.
+        Process historical data for a single ticker to calculate forecasted returns and trading signals.
 
-        The method performs the following:
+        This method:
+          1. Computes log returns.
+          2. Derives volume-related features (including log transform, rolling mean/STD, z-score, and ratio).
+          3. Calculates price range features based on high, low, open, and close prices.
+          4. Computes volatility proxies using both the Parkinson and a simplified Yang–Zhang method.
+          5. Generates lag features for log return, volume z-score, and high-low range to serve as exogenous regressors.
+          6. Applies a rolling forecast (or single-point forecast) using an EGARCH‑X model.
 
-          1. Sort data chronologically.
-          2. Compute log returns:
-                r_t = ln(close_t / close_{t-1})
-          3. Volume preprocessing:
-                - Compute vol_log = ln(volume)
-                - Standardize vol_log over a rolling 20‑day window to obtain vol_z.
-                - Compute volume ratio = volume / rolling_mean(volume, window=20).
-          4. Price range features:
-                - Normalized high–low range = (high – low) / close_{t-1}
-                - Normalized open–close range = |open – close| / close_{t-1}
-          5. Realized volatility using the Parkinson estimator:
-                parkinson_vol = sqrt((rolling_mean((ln(high/low))^2, window=20)) / (4 * ln(2)))
-          6. Create lag features (lags 1 through 5) for log_return, vol_z and normalized high–low range.
-          7. Winsorize extreme values (clip at the 1st and 99th percentiles).
-          8. For forecasting:
-                a. In backtesting mode (latest_only=False): partition the data into blocks
-                   of length equal to forecast_horizon. For each block, use the most recent
-                   forecast_lookback days (prior to the block start) as the training window,
-                   fit a GARCH‑X model (with exogenous lag features), and forecast the next
-                   forecast_horizon days. The average forecast return is used to decide:
-                        if forecast > 0 and vol_z (from training) > min_volume_strength then signal = +1,
-                        if forecast < 0 and vol_z > min_volume_strength then signal = –1,
-                        else signal = 0.
-                b. In "latest_only" mode, the forecast is computed only using the last forecast_lookback days.
-          9. The computed forecast_return, signal and signal_strength are then assigned
-             (constant over each block).
+        Parameters:
+            data (pd.DataFrame): DataFrame containing historical OHLCV data.
+            latest_only (bool): If True, compute forecast only for the most recent data point.
 
         Returns:
-            pd.DataFrame: DataFrame with the original price columns and new columns:
-                          'forecast_return', 'signal', and 'signal_strength'.
+            pd.DataFrame: DataFrame with the following columns:
+                - open, high, low, close
+                - forecast_return, signal, signal_strength, position_size
+              If processing multiple tickers, a ticker identifier may also be included.
         """
         df = data.copy()
-        # Ensure the index is datetime. In multi-ticker data, the date is in level 1.
+        # If the DataFrame index is a MultiIndex, reset and use only the date level.
         if isinstance(df.index, pd.MultiIndex):
             df = df.reset_index(level=0, drop=True)
         df.sort_index(inplace=True)
 
-        # 1. Compute log returns: r_t = ln(close_t / close_{t-1})
+        # 1. Compute the logarithmic returns from close prices.
         df["log_return"] = np.log(df["close"] / df["close"].shift(1))
-
-        # 2. Volume preprocessing:
-        #    a. Log-transform volume.
+        
+        # 2. Compute volume-related features: log(volume), moving window mean and standard deviation, standardized volume,
+        #    and ratio relative to a 20-day moving average.
         df["vol_log"] = np.log(df["volume"])
-        #    b. Standardize volume within a rolling 20-day window.
         df["vol_mean"] = df["vol_log"].rolling(window=20, min_periods=20).mean()
         df["vol_std"] = df["vol_log"].rolling(window=20, min_periods=20).std()
         df["vol_z"] = (df["vol_log"] - df["vol_mean"]) / df["vol_std"]
-        #    c. Create volume ratio.
         df["vol_ratio"] = df["volume"] / df["volume"].rolling(window=20, min_periods=20).mean()
-
-        # 3. Price range features:
+        
+        # 3. Calculate price range features based on high-low and open-close differences.
         df["hl_range"] = (df["high"] - df["low"]) / df["close"].shift(1)
         df["oc_range"] = (df["open"] - df["close"]).abs() / df["close"].shift(1)
 
-        # 4. Realized volatility using Parkinson estimator.
+        # 4. Compute volatility proxies.
+        # Parkinson volatility: estimate volatility using high and low prices.
         df["log_hl"] = np.log(df["high"] / df["low"])
         df["parkinson_vol"] = np.sqrt(
-            df["log_hl"].rolling(window=20, min_periods=20).apply(
-                lambda x: np.mean(x**2), raw=True
-            ) / (4 * np.log(2))
+            df["log_hl"].rolling(window=20, min_periods=20).apply(lambda x: np.mean(x**2), raw=True)
+            / (4 * np.log(2))
+        )
+        # Simplified Yang–Zhang volatility proxy using overnight returns and open-to-close returns.
+        df["overnight_ret"] = np.log(df["open"] / df["close"].shift(1))
+        df["oc_ret"] = np.log(df["close"] / df["open"])
+        df["yz_vol"] = np.sqrt(
+            df["overnight_ret"].rolling(window=20, min_periods=20).var() +
+            df["oc_ret"].rolling(window=20, min_periods=20).var() +
+            0.5 * df["hl_range"].rolling(window=20, min_periods=20).var()
         )
 
-        # 5. Create lag features (lags 1 to 5) for log_return, vol_z and hl_range.
+        # 5. Generate lag features for log_return, standardized volume (vol_z), and high-low range for lags 1 to 5.
         for lag in range(1, 6):
             df[f"lag{lag}_return"] = df["log_return"].shift(lag)
             df[f"lag{lag}_vol"] = df["vol_z"].shift(lag)
             df[f"lag{lag}_hl"] = df["hl_range"].shift(lag)
 
-        # Drop rows with NA values (due to shift and rolling windows).
+        # Remove rows with missing values resulting from rolling window calculations.
         df.dropna(inplace=True)
 
-        # 6. Winsorize the selected features at the 1st and 99th percentiles.
-        winsorize_cols = ["log_return", "vol_z", "hl_range", "oc_range", "parkinson_vol"]
-        for col in winsorize_cols:
-            lower = df[col].quantile(0.01)
-            upper = df[col].quantile(0.99)
-            df[col] = df[col].clip(lower, upper)
+        # Note: Winsorization to mitigate outliers is applied later in the _fit_forecast method to avoid look-ahead bias.
 
-        # Initialize forecast result columns.
+        # Initialize columns for storing forecast outputs.
         df["forecast_return"] = np.nan
         df["signal"] = np.nan
         df["signal_strength"] = np.nan
+        df["position_size"] = np.nan
 
-        # Set forecast horizon.
         horizon = self.forecast_horizon
 
-        # If latest_only is True: compute forecast using the last forecast_lookback days.
         if latest_only:
-            train = df.iloc[-self.forecast_lookback :]
-            fc_ret, sig, sig_str = self._fit_forecast(train, horizon)
+            # For latest-only forecasting, use the most recent training window to compute forecasted values and assign them accordingly.
+            train = df.iloc[-self.forecast_lookback:]
+            fc_ret, sig, sig_str, pos_size = self._fit_forecast(train, horizon)
             df.loc[df.index[-1], "forecast_return"] = fc_ret
             df.loc[df.index[-1], "signal"] = sig
             df.loc[df.index[-1], "signal_strength"] = sig_str
-            # Forward fill these values to the last row.
+            df.loc[df.index[-1], "position_size"] = pos_size
             df.fillna(method="ffill", inplace=True)
         else:
-            # Backtesting mode: Partition the data into blocks of length horizon.
-            unique_dates = df.index.unique()
-            # Create blocks where each block starts at indices 0, horizon, 2*horizon, ...
-            block_starts = np.arange(0, len(unique_dates), horizon)
-            for bs in block_starts:
-                block_start_date = unique_dates[bs]
-                # Training window is the forecast_lookback days preceding the block start.
-                train = df.loc[:block_start_date].iloc[-self.forecast_lookback :]
-                fc_ret, sig, sig_str = self._fit_forecast(train, horizon)
-                # Determine all dates in the forecast block.
-                block_dates = unique_dates[bs : bs + horizon]
-                df.loc[block_dates, "forecast_return"] = fc_ret
-                df.loc[block_dates, "signal"] = sig
-                df.loc[block_dates, "signal_strength"] = sig_str
-
-            # In case any rows remain NA (e.g. at the very beginning), fill forward.
+            # Perform a rolling forecast using overlapping training windows for each forecast horizon.
+            for i in range(len(df) - self.forecast_lookback - horizon + 1):
+                train = df.iloc[i : i + self.forecast_lookback]
+                forecast_dates = df.index[i + self.forecast_lookback : i + self.forecast_lookback + horizon]
+                fc_ret, sig, sig_str, pos_size = self._fit_forecast(train, horizon)
+                df.loc[forecast_dates, "forecast_return"] = fc_ret
+                df.loc[forecast_dates, "signal"] = sig
+                df.loc[forecast_dates, "signal_strength"] = sig_str
+                df.loc[forecast_dates, "position_size"] = pos_size
             df.fillna(method="ffill", inplace=True)
 
-        # Finally, select the relevant columns for risk management.
-        # The RiskManager requires at least: 'signal', 'high', 'low', 'close'.
-        result = df[
-            [
-                "open",
-                "high",
-                "low",
-                "close",
-                "forecast_return",
-                "signal",
-                "signal_strength",
-            ]
-        ].copy()
-
+        # Retain only the essential columns required for risk management processing.
+        cols = ["open", "high", "low", "close", "forecast_return", "signal", "signal_strength", "position_size"]
+        result = df[cols].copy()
+        # Include a ticker identifier if processing data for multiple tickers.
+        if 'ticker' not in result.columns and 'ticker' in data.columns:
+            result['ticker'] = data['ticker']
         return result
 
-    def _fit_forecast(self, train: pd.DataFrame, horizon: int):
+    def _fit_forecast(self, train: pd.DataFrame, horizon: int) -> Tuple[float, int, float, float]:
         """
-        Fit the GARCH‑X model on the training data and forecast the mean return for the next horizon days.
+        Fit an EGARCH‑X model on a training subset of data and forecast the cumulative log return over a specified horizon.
+
+        The method:
+          - Defines lag features as exogenous regressors.
+          - Applies winsorization to both the exogenous features and target variable to reduce the impact of outliers.
+          - Uses PCA on the exogenous regressors to mitigate multicollinearity.
+          - Tries multiple candidate EGARCH configurations and selects the one with the lowest AIC.
+          - In case all candidate models fail to fit, falls back to an EWMA forecast.
 
         Parameters:
-            train (pd.DataFrame): The training window from which to fit the model.
+            train (pd.DataFrame): Training data for model fitting.
             horizon (int): Forecast horizon (number of days ahead).
 
         Returns:
-            tuple: (avg_forecast_return, signal, signal_strength)
-                - avg_forecast_return: The average forecasted return over the horizon.
-                - signal: +1 if forecast >0 and volume is strong, –1 if forecast <0 and volume is strong, else 0.
-                - signal_strength: A scalar measure of forecast strength, e.g. abs(avg_forecast_return)*vol_z.
+            tuple:
+                - cumulative_forecast_return (float): Forecasted cumulative return, computed as exp(sum(forecasted log returns)) - 1.
+                - signal (int): Trading signal indicator (1 for buy, 0 or -1 for sell/hold).
+                - signal_strength (float): Risk-adjusted signal strength value.
+                - position_size (float): Computed position sizing value based on forecast volatility and allocated capital.
         """
-        # Define the columns for exogenous regressors (lag features).
-        exog_cols = [
-            f"lag{l}_return" for l in range(1, 6)
-        ] + [f"lag{l}_vol" for l in range(1, 6)] + [f"lag{l}_hl" for l in range(1, 6)]
-        X_train = train[exog_cols]
-        y_train = train["log_return"]
+        # Specify lag features to serve as exogenous regressors.
+        exog_cols = (
+            [f"lag{l}_return" for l in range(1, 6)] +
+            [f"lag{l}_vol" for l in range(1, 6)] +
+            [f"lag{l}_hl" for l in range(1, 6)]
+        )
+        X_train = train[exog_cols].copy()
+        y_train = train["log_return"].copy()
 
-        # Fit the GARCH-X model using arch. We use a GARCH(1,1) specification with an ARX in the mean.
+        # Apply winsorization to each column using training sample quantiles (1% and 99%) to limit the influence of outliers.
+        for col in X_train.columns:
+            lower = X_train[col].quantile(0.01)
+            upper = X_train[col].quantile(0.99)
+            X_train[col] = X_train[col].clip(lower, upper)
+        lower_y = y_train.quantile(0.01)
+        upper_y = y_train.quantile(0.99)
+        y_train = y_train.clip(lower_y, upper_y)
+
+        # Reduce feature dimensionality and mitigate multicollinearity via PCA.
+        n_components = min(5, X_train.shape[1])
+        pca = PCA(n_components=n_components)
+        X_train_pca = pd.DataFrame(pca.fit_transform(X_train),
+                                   index=X_train.index,
+                                   columns=[f'pca_{i}' for i in range(n_components)])
+
+        # Define candidate orders for the EGARCH model for model selection based on AIC.
+        candidate_orders = [(1, 1), (1, 2), (2, 1)]
+        best_aic = np.inf
+        best_result = None
+        best_order = None
+
+        for (p, q) in candidate_orders:
+            try:
+                model = arch_model(
+                    y_train,
+                    x=X_train_pca,
+                    mean="ARX",
+                    lags=0,  # Lags are provided via the exogenous PCA features.
+                    vol="EGARCH",
+                    p=p,
+                    q=q,
+                    dist="t"
+                )
+                res = model.fit(disp="off")
+                if res.aic < best_aic:
+                    best_aic = res.aic
+                    best_result = res
+                    best_order = (p, q)
+            except Exception as e:
+                self.logger.warning(f"EGARCH({p},{q}) model failed: {e}")
+                continue
+
+        # Log the selected EGARCH model configuration (order and AIC) for tracking.
+        model_filename = os.path.join(self.model_config_folder, "model_config.txt")
+        if best_order is not None:
+            with open(model_filename, "a") as f:
+                f.write(f"Ticker: [unknown] | Best Order: EGARCH{best_order} | AIC: {best_aic}\n")
+        else:
+            self.logger.error("All candidate EGARCH models failed. Falling back to EWMA.")
+
         try:
-            model = arch_model(
-                y_train,
-                x=X_train,
-                mean="ARX",
-                lags=0,  # because lags are provided in x
-                vol="GARCH",
-                p=1,
-                q=1,
-                dist="normal",
-            )
-            res = model.fit(disp="off")
-            # For forecasting the exogenous variables, we use the last row of training exog and replicate it.
-            last_exog = X_train.iloc[-1]
-            X_forecast = pd.DataFrame(
-                np.tile(last_exog.values, (horizon, 1)),
-                columns=exog_cols,
-            )
-            forecast = res.forecast(horizon=horizon, x=X_forecast, reindex=False)
-            # The forecast mean is a DataFrame with horizon columns; take the last row and average the values.
-            fc_mean = forecast.mean.iloc[-1]
-            avg_fc_ret = fc_mean.mean()
-        except Exception as e:
-            self.logger.error(f"GARCH‑X model fitting/forecasting error: {e}")
-            avg_fc_ret = 0.0
-
-        # Use the last available standardized volume from the training.
-        vol_strength = train["vol_z"].iloc[-1]
-
-        # Generate a signal (with simple volume condition):
-        if avg_fc_ret > 0 and vol_strength > self.min_volume_strength:
-            sig = 1
-            sig_str = avg_fc_ret * vol_strength
-        elif avg_fc_ret < 0 and vol_strength > self.min_volume_strength:
-            if self.params.get('long_only'):
-                sig = 0
-                sig_str = abs(avg_fc_ret) * vol_strength
+            if best_result is not None:
+                # Transform the most recent exogenous features using the same PCA transformation
+                # and replicate them to align with the forecast horizon.
+                last_exog = X_train.iloc[-1].values.reshape(1, -1)
+                last_exog_pca = pca.transform(last_exog)
+                X_forecast_pca = pd.DataFrame(
+                    np.tile(last_exog_pca, (horizon, 1)),
+                    columns=[f'pca_{i}' for i in range(n_components)]
+                )
+                forecast = best_result.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
+                # Calculate the cumulative forecasted return by exponentiating the sum of forecasted log returns and subtracting 1.
+                fc_means = forecast.mean.iloc[-1].values
+                cumulative_ret = np.exp(np.sum(fc_means)) - 1
+                # Obtain an overall forecasted volatility as the square root of the mean forecasted variance.
+                forecast_vol = np.sqrt(forecast.variance.iloc[-1].mean())
+                avg_fc_ret = cumulative_ret  # Use cumulative return as the representative forecast signal.
             else:
-                sig = -1
-                sig_str = abs(avg_fc_ret) * vol_strength
+                raise Exception("No suitable EGARCH model fitted.")
+
+        except Exception as e:
+            self.logger.error(f"Forecasting error with EGARCH model: {e}. Using EWMA fallback.")
+            avg_fc_ret = train['log_return'].ewm(span=30).mean().iloc[-1]
+            forecast_vol = train['parkinson_vol'].iloc[-1]  # Use Parkinson volatility as a fallback proxy.
+            cumulative_ret = avg_fc_ret  # Fallback cumulative return based on EWMA.
+
+        # Calculate a risk-adjusted return by normalizing the cumulative return with forecast volatility.
+        if forecast_vol > 0:
+            risk_adj_return = cumulative_ret / forecast_vol
+        else:
+            risk_adj_return = 0.0
+
+        vol_strength = train["vol_z"].iloc[-1]
+        signal_strength = risk_adj_return * vol_strength
+
+        # Generate the trading signal based on risk-adjusted return and volume strength.
+        if risk_adj_return > 0 and vol_strength > self.min_volume_strength:
+            sig = 1
+        elif risk_adj_return < 0 and vol_strength > self.min_volume_strength:
+            sig = 0 if self.long_only else -1
         else:
             sig = 0
-            sig_str = 0.0
 
-        return avg_fc_ret, sig, sig_str
+        # Compute the position size based on the risk-adjusted return scaled by the allocated capital.
+        position_size = risk_adj_return * self.capital
+
+        return cumulative_ret, sig, signal_strength, position_size
