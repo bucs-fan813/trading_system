@@ -1,5 +1,3 @@
-# trading_system/src/strategies/risk_management.py
-
 """
 Risk Management Component
 
@@ -12,7 +10,7 @@ Usage:
     Initialize the RiskManager with desired risk parameters. Then, call its apply()
     method with daily price data and a signals DataFrame. The returned DataFrame includes
     the updated position, realized return (when a trade exit is triggered), cumulative return,
-    and the risk management event type (e.g., stop_loss, take_profit, or signal_exit).
+    and the risk management event type (e.g., stop_loss, take_profit, trailing_stop, or signal_exit).
 """
 
 import pandas as pd
@@ -21,12 +19,14 @@ import numpy as np
 class RiskManager:
     """
     A class to apply risk management to trading signals with built-in adjustments
-    for slippage, transaction costs, stop-loss, and take-profit. It calculates
-    the trade returns and cumulative returns based on risk-managed exits.
+    for slippage, transaction costs, stop-loss, take-profit, and trailing stop logic.
+    It calculates the trade returns and cumulative returns based on risk-managed exits.
 
     Attributes:
         stop_loss_pct (float): Fractional drop from the entry price to trigger a stop loss.
         take_profit_pct (float): Fractional gain from the entry price to trigger a take profit.
+        trailing_stop_pct (float): Fractional distance from the peak (for long) or trough (for short)
+                                   that the price is allowed to reverse before the trade is exited.
         slippage_pct (float): Estimated slippage as a fraction of the price.
         transaction_cost_pct (float): Transaction cost as a fraction of the price.
     """
@@ -34,19 +34,22 @@ class RiskManager:
     def __init__(self,
                  stop_loss_pct: float = 0.05,
                  take_profit_pct: float = 0.10,
+                 trailing_stop_pct: float = 0.0,
                  slippage_pct: float = 0.001,
                  transaction_cost_pct: float = 0.001):
         """
         Initialize the RiskManager with risk and cost parameters.
-
+        
         Args:
             stop_loss_pct (float): Percentage drop from the entry price to trigger stop loss.
             take_profit_pct (float): Percentage increase from the entry price to trigger take profit.
+            trailing_stop_pct (float): Percentage for the trailing stop (0 to disable).
             slippage_pct (float): Estimated slippage percentage during execution.
             transaction_cost_pct (float): Estimated transaction cost percentage per trade.
         """
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.trailing_stop_pct = trailing_stop_pct
         self.slippage_pct = slippage_pct
         self.transaction_cost_pct = transaction_cost_pct
 
@@ -123,37 +126,93 @@ class RiskManager:
         target_exit = (long_mask & (df['high'] >= df['target_level'])) | (short_mask & (df['low'] <= df['target_level']))
         signal_exit = df['signal'].abs().diff().abs() >= 1
 
+        # --- Trailing Stop Logic Added Here ---
+        # If trailing_stop_pct is enabled (> 0), then compute the dynamic trailing stop level.
+        # For long positions, the trailing stop level is set to the cumulative maximum high
+        # (since trade entry) multiplied by (1 - trailing_stop_pct). For short positions, it is
+        # the cumulative minimum low multiplied by (1 + trailing_stop_pct).
+        if self.trailing_stop_pct > 0:
+            # Mark the bar when a new trade is initiated.
+            df['entry_flag'] = False
+            df.loc[entry_mask, 'entry_flag'] = True
+            if len(df) > 0 and df.iloc[0]['raw_position'] != 0:
+                df.iat[0, df.columns.get_loc('entry_flag')] = True
+            # Create a trade identifier that increases at every entry.
+            df['trade_id'] = np.where(df['raw_position'] != 0, df['entry_flag'].cumsum(), np.nan)
+
+            # Compute cumulative high (for long trades) and cumulative low (for short trades) within each trade.
+            df['cummax_high'] = df.groupby('trade_id')['high'].cummax()
+            df['trailing_stop_long'] = df['cummax_high'] * (1 - self.trailing_stop_pct)
+
+            df['cummin_low'] = df.groupby('trade_id')['low'].cummin()
+            df['trailing_stop_short'] = df['cummin_low'] * (1 + self.trailing_stop_pct)
+
+            # Define trailing stop exit conditions:
+            # For long positions: exit if the day's low falls to or below the trailing stop level.
+            # For short positions: exit if the day's high rises to or above the trailing stop level.
+            trailing_stop_exit = (long_mask & (df['low'] <= df['trailing_stop_long'])) | (short_mask & (df['high'] >= df['trailing_stop_short']))
+        else:
+            trailing_stop_exit = pd.Series(False, index=df.index)
+        # ------------------------------------------------
+
         # Create a combined mask for any exit event.
-        exit_mask = stop_exit | target_exit | signal_exit
+        exit_mask = stop_exit | target_exit | trailing_stop_exit | signal_exit
 
         # Label the exit event type.
-        df['exit_type'] = np.select(
-            [stop_exit, target_exit, signal_exit],
-            ['stop_loss', 'take_profit', 'signal_exit'],
-            default='none'
-        )
+        if self.trailing_stop_pct > 0:
+            df['exit_type'] = np.select(
+                [trailing_stop_exit, stop_exit, target_exit, signal_exit],
+                ['trailing_stop', 'stop_loss', 'take_profit', 'signal_exit'],
+                default='none'
+            )
+        else:
+            df['exit_type'] = np.select(
+                [stop_exit, target_exit, signal_exit],
+                ['stop_loss', 'take_profit', 'signal_exit'],
+                default='none'
+            )
 
         # Compute the exit price based on which exit condition was met.
-        df['exit_price'] = np.select(
-            [
-                stop_exit & long_mask,
-                target_exit & long_mask,
-                stop_exit & short_mask,
-                target_exit & short_mask,
-                signal_exit
-            ],
-            [
-                df['stop_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
-                df['target_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
-                df['stop_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
-                df['target_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
-                df['close'] * (1 - (df['raw_position'] * (self.slippage_pct + self.transaction_cost_pct)))
-            ],
-            default=np.nan
-        )
-        # For bars without an exit event, exit_price remains NaN. Forward fill the exit_price
-        # after an exit until a new trade is initiated so that each trade has an associated exit price.
-        df['exit_price'] = df['exit_price'].where(exit_mask, np.nan).ffill()
+        if self.trailing_stop_pct > 0:
+            df['exit_price'] = np.select(
+                [
+                    trailing_stop_exit & long_mask,
+                    trailing_stop_exit & short_mask,
+                    stop_exit & long_mask,
+                    stop_exit & short_mask,
+                    target_exit & long_mask,
+                    target_exit & short_mask,
+                    signal_exit
+                ],
+                [
+                    df['trailing_stop_long'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                    df['trailing_stop_short'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                    df['stop_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                    df['stop_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                    df['target_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                    df['target_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                    df['close'] * (1 - (df['raw_position'] * (self.slippage_pct + self.transaction_cost_pct)))
+                ],
+                default=np.nan
+            )
+        else:
+            df['exit_price'] = np.select(
+                [
+                    stop_exit & long_mask,
+                    target_exit & long_mask,
+                    stop_exit & short_mask,
+                    target_exit & short_mask,
+                    signal_exit
+                ],
+                [
+                    df['stop_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                    df['target_level'] * (1 - self.slippage_pct - self.transaction_cost_pct),
+                    df['stop_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                    df['target_level'] * (1 + self.slippage_pct + self.transaction_cost_pct),
+                    df['close'] * (1 - (df['raw_position'] * (self.slippage_pct + self.transaction_cost_pct)))
+                ],
+                default=np.nan
+            )
 
         # Calculate the realized return for trades where an exit event occurred.
         # For long trades: return = (exit_price / entry_price) - 1.
@@ -181,7 +240,11 @@ class RiskManager:
         )
         df['cumulative_return'] = (df['trade_multiplier']).cumprod() - 1
 
-        result = df.drop(columns=['raw_position', 'entry_price' ,'stop_level',
-                                   'target_level', 'trade_multiplier', 'exit_price'])
+        # Drop temporary and helper columns.
+        cols_to_drop = ['raw_position', 'entry_price', 'stop_level',
+                        'target_level', 'trade_multiplier', 'exit_price']
+        if self.trailing_stop_pct > 0:
+            cols_to_drop.extend(['entry_flag', 'trade_id', 'cummax_high', 'cummin_low', 'trailing_stop_long', 'trailing_stop_short'])
+        result = df.drop(columns=cols_to_drop)
 
         return result
