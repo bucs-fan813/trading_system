@@ -1,5 +1,16 @@
 # src/strategies/advanced/enhanced_market_pressure_strat.py
 
+""" TODO: implement 'gap_threshold' parameter- A gap threshold would be used to handle price gaps 
+between trading sessions. In stock markets, especially those with limited trading hours like the 
+Indian markets, prices can "gap" up or down between the close of one session and the open of the next.
+
+This parameter could be implemented to:
+
+Detect significant overnight gaps (when the opening price differs from the previous closing price by more than the threshold)
+Adjust strategy behavior in response to gaps (e.g., avoid entering positions after a large gap or use special handling for stop-loss orders)
+Filter out false signals that might occur due to gaps
+"""
+
 """strat credit: https://www.jamessawyer.co.uk/market-pressure-analysis-page.html"""
 
 import pandas as pd
@@ -43,10 +54,14 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
                 - 'pressure_threshold' (default: 0.3): Threshold for pressure to generate signal
                 - 'long_only' (default: True): Whether to only take long positions
                 - 'use_multiple_dists' (default: False): Use multiple distributions
+                - 'price_trend_window' (default: 5): Window for price trend calculation
+                - 'pressure_trend_window' (default: 5): Window for pressure trend calculation
                 - 'stop_loss_pct' (default: 0.05): Stop loss percentage
                 - 'take_profit_pct' (default: 0.10): Take profit percentage
                 - 'slippage_pct' (default: 0.001): Slippage percentage
                 - 'transaction_cost_pct' (default: 0.001): Transaction cost percentage
+                - 'bull_div_threshold' (default: 0.01): Threshold for bullish divergence
+                - 'bear_div_threshold' (default: 0.01): Threshold for bearish divergence
         """
         default_params = {
             'window': 20, 
@@ -54,7 +69,11 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             'confidence_threshold': 0.95,
             'pressure_threshold': 0.3,
             'long_only': True,
-            'use_multiple_dists': False
+            'use_multiple_dists': False,
+            'price_trend_window': 5,
+            'pressure_trend_window': 5,
+            'bull_div_threshold': 0.01,
+            'bear_div_threshold': 0.01
         }
         params = params or default_params
         super().__init__(db_config, params)
@@ -66,6 +85,10 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         self.pressure_threshold = params.get('pressure_threshold', default_params['pressure_threshold'])
         self.long_only = params.get('long_only', default_params['long_only'])
         self.use_multiple_dists = params.get('use_multiple_dists', default_params['use_multiple_dists'])
+        self.price_trend = int(params.get('price_trend_window', default_params['price_trend_window']))
+        self.pressure_trend = int(params.get('pressure_trend_window', default_params['pressure_trend_window']))
+        self.bull_div_threshold = params.get('bull_div_threshold', default_params['bull_div_threshold'])
+        self.bear_div_threshold = params.get('bear_div_threshold', default_params['bear_div_threshold'])
         
         # Initialize logger
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -281,13 +304,13 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
                 df.loc[df.index[self.window:], 'pressure_significance'] = pressure_significance
         
         # Calculate trends for divergence detection
-        df['price_trend'] = df['close'].pct_change(5).rolling(window=5).mean().fillna(0)
-        df['pressure_trend'] = df['market_pressure'].diff(5).rolling(window=5).mean().fillna(0)
+        df['price_trend'] = df['close'].pct_change(5).rolling(window=self.price_trend).mean().fillna(0)
+        df['pressure_trend'] = df['market_pressure'].diff(5).rolling(window=self.pressure_trend).mean().fillna(0)
         
         # Detect divergences
         df['divergence'] = 0
-        bull_div = (df['price_trend'] < -0.01) & (df['pressure_trend'] > 0.01) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
-        bear_div = (df['price_trend'] > 0.01) & (df['pressure_trend'] < -0.01) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        bull_div = (df['price_trend'] < (-1* self.bull_div_threshold)) & (df['pressure_trend'] > self.bull_div_threshold) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
+        bear_div = (df['price_trend'] > self.bear_div_threshold) & (df['pressure_trend'] < (-1*self.bear_div_threshold)) & (df['pressure_significance'] > self.confidence_threshold * 0.8)
         df.loc[bull_div, 'divergence'] = 1
         df.loc[bear_div, 'divergence'] = -1
         
