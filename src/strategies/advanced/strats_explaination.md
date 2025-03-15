@@ -227,54 +227,130 @@ The generated signals are passed to a RiskManager that applies:
 - Model configurations are cached for future reference
 
 ---
+# Mathematical Explanation of Prophet Momentum Strategy
 
-## Prophet Momentum Strategy:
+The Prophet Momentum Strategy is a quantitative trading approach that combines time series forecasting with momentum detection to generate trading signals. This document provides a mathematical explanation of the key components of this strategy.
 
-### Overview
+## 1. Prophet Time Series Forecasting
 
-The Prophet Momentum Strategy blends time series forecasting using Facebook's Prophet library with trend confirmation through slope analysis. It dynamically adapts to market conditions and volatility regimes to generate trading signals.
+The strategy utilizes Facebook's Prophet, an additive time series forecasting model expressed as:
 
-### Mathematical Foundation
+$$y(t) = g(t) + s(t) + h(t) + \epsilon_t$$
 
-This strategy relies on the decomposition of time-series data into trend, seasonality, and holiday effects, forecast using Prophet, and validated through trend-slope calculations.
+Where:
+- $y(t)$ is the price forecast at time $t$
+- $g(t)$ represents the trend component
+- $s(t)$ represents seasonality components
+- $h(t)$ represents holiday effects
+- $\epsilon_t$ is the error term
 
-### Key Components
+The model is customized with ticker-specific hyperparameters optimized through forward cross-validation:
+- Changepoint prior scale ($\delta_{cp}$): Controls flexibility of the trend
+- Seasonality prior scale ($\delta_s$): Controls strength of seasonality
+- Holidays prior scale ($\delta_h$): Controls impact of holidays
+- Seasonality mode (additive or multiplicative)
+- Fourier order ($k$): Controls complexity of seasonal patterns
 
-1.  **Data Preparation**:
-    -   Input: Price data \( P_t \) (Close), Volume \( V_t \).
-    -   Extra Regressors: Volume, Open, High, Low, 14-day RSI.
+## 2. Hyperparameter Optimization
 
-2.  **Prophet Model**:
-    -   Time-series Decomposition: \( y(t) = g(t) + s(t) + h(t) + \epsilon_t \), where \( g(t) \) is trend, \( s(t) \) is seasonality, \( h(t) \) is holiday effects, and \( \epsilon_t \) is the error term.
-    -   Trend \( g(t) \): Piecewise linear or logistic growth.
-    -   Seasonality \( s(t) \): Modeled via Fourier series:
-        $$
-        s(t) = \sum_{n=1}^{N} \left[ a_n \cos\left(\frac{2\pi nt}{P}\right) + b_n \sin\left(\frac{2\pi nt}{P}\right) \right]
-        $$
+Hyperparameters are optimized by maximizing directional accuracy through forward cross-validation. For each fold:
 
-3.  **Hyperparameter Tuning via Cross-Validation**:
-    -   Optimization Goal: Minimize \( \text{loss} = 1 - \text{DA} \), where \( \text{DA} \) is directional accuracy.
-    -   Directional Accuracy (DA): Fraction of forecasts with correct sign prediction.
+$$\text{DA} = \frac{1}{N} \sum_{i=1}^{N} I[\text{sign}(\hat{y}_i - y_{\text{last}}) = \text{sign}(y_i - y_{\text{last}})]$$
 
-4.  **Slope Test**:
-    -   Forecast Points: \( x = [7, 14, 30] \) (days).
-    -   Forecast Values: \( y = [\hat{P}\_7, \hat{P}\_{14}, \hat{P}\_{30}] \).
-    -   Slope Calculation: \( \beta = \frac{\operatorname{Cov}(x, y)}{\operatorname{Var}(x)} \)
-    -   T-Statistic: \( t = \frac{\beta}{\text{std\_err}} \)
+Where:
+- $\hat{y}_i$ is the forecasted price
+- $y_i$ is the actual price
+- $y_{\text{last}}$ is the last observed price in the training set
+- $I[·]$ is the indicator function
 
-5.  **Market Regime Detection**:
-    -   Volatility Calculation: 21-day rolling standard deviation of returns \( \sigma_t \).
-    -   Hidden Markov Model (HMM) states based on \( \sigma_t \).
+The optimization objective is to minimize loss:
 
-6.  **Signal Generation**:
-    -   Conditions:
-        -   Short Horizon Forecast > Current Price
-        -   Long Horizon Forecast > Mid Horizon Forecast
-        -   \( \lvert t \rvert > 2 \) (Significant trend)
-    -   Signal Strength: \( \text{Signal Strength} = \frac{\lvert f_{\text{long}} - P_t\rvert}{P_t} \times \frac{\lvert t\rvert}{2} \)
+$$\text{Loss} = 1 - \text{DA}$$
 
-### Advantages
+## 3. Forecast Confidence Analysis
 
--   Combines time-series decomposition with trend confirmation.
--   Dynamic hyperparameter tuning adapts to market changes.
--   Volatility regime detection helps reduce false positives during high-volatility periods.
+The strategy analyzes confidence in the forecasted direction using multiple time horizons:
+- Short horizon: $h_{\text{short}} = 7$ days
+- Medium horizon: $h_{\text{mid}} = 14$ days
+- Long horizon: $h_{\text{long}} = 30$ days
+
+For each horizon, Prophet generates forecasts with confidence intervals:
+- $\hat{y}_t$ (point forecast)
+- $\hat{y}_t^{\text{lower}}$ (lower bound)
+- $\hat{y}_t^{\text{upper}}$ (upper bound)
+
+## 4. Trend Significance Testing
+
+The strategy assesses the statistical significance of the forecasted trend using linear regression on the forecast points:
+
+$$\hat{y}_t = \beta_0 + \beta_1 t + \varepsilon_t$$
+
+The standard error of the slope ($\text{SE}_{\beta_1}$) is computed, and the t-statistic is calculated:
+
+$$t = \frac{\beta_1}{\text{SE}_{\beta_1}}$$
+
+This t-statistic measures the significance of the forecasted trend.
+
+## 5. Market Regime Detection
+
+A Hidden Markov Model (HMM) with Gaussian emissions is used to detect market regimes based on volatility:
+
+$$\sigma_t = \text{StdDev}(r_{t-21:t})$$
+
+Where $r_t$ represents daily returns. The HMM identifies two states:
+- Low volatility state
+- High volatility state
+
+The model is specified as:
+
+$$p(z_t|z_{t-1}) = A_{z_{t-1},z_t}$$
+$$p(\sigma_t|z_t) = \mathcal{N}(\mu_{z_t}, \Sigma_{z_t})$$
+
+Where:
+- $z_t$ is the hidden state at time $t$
+- $A$ is the transition matrix
+- $\mathcal{N}(\mu_{z_t}, \Sigma_{z_t})$ is a Gaussian distribution with mean $\mu_{z_t}$ and variance $\Sigma_{z_t}$
+
+## 6. Signal Generation
+
+Trading signals are generated based on the following conditions:
+
+For a long signal ($S_t = 1$):
+- $\hat{y}_{t+h_{\text{short}}}^{\text{lower}} > P_t$ (Lower bound of short forecast > current price)
+- $\hat{y}_{t+h_{\text{long}}}^{\text{upper}} > \hat{y}_{t+h_{\text{mid}}}^{\text{lower}}$ (Confidence intervals are monotonically rising)
+- $t > 2$ (Slope is significantly positive)
+
+For a short signal ($S_t = -1$):
+- $\hat{y}_{t+h_{\text{short}}}^{\text{upper}} < P_t$ (Upper bound of short forecast < current price)
+- $\hat{y}_{t+h_{\text{long}}}^{\text{lower}} < \hat{y}_{t+h_{\text{mid}}}^{\text{upper}}$ (Confidence intervals are monotonically falling)
+- $t < -2$ (Slope is significantly negative)
+
+Otherwise, $S_t = 0$ (no signal).
+
+## 7. Signal Strength Calculation
+
+Signal strength is calculated to determine position sizing:
+
+For long positions:
+$$\text{Strength} = \frac{\hat{y}_{t+h_{\text{long}}} - P_t}{P_t} \cdot \frac{t}{2}$$
+
+For short positions:
+$$\text{Strength} = \frac{P_t - \hat{y}_{t+h_{\text{long}}}}{P_t} \cdot \frac{|t|}{2}$$
+
+## 8. Risk Management
+
+Risk parameters include:
+- Stop loss percentage: $\text{SL} = 5\%$
+- Take profit percentage: $\text{TP} = 10\%$
+- Slippage percentage: $\text{Slip} = 0.1\%$
+- Transaction cost percentage: $\text{TC} = 0.1\%$
+
+These are applied to manage position risk and account for trading frictions.
+
+## 9. Market Regime Override
+
+In high-volatility regimes (as detected by the HMM), all signals are neutralized:
+
+$$\text{If } z_t = \text{high volatility}, \text{ then } S_t = 0 \text{ and Strength} = 0$$
+
+This acts as a risk-off mechanism during turbulent market conditions.
