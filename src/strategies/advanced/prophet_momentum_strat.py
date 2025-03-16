@@ -29,6 +29,7 @@ class ProphetMomentumStrategy(BaseStrategy):
             'horizon_long': 30,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             # additional flag if only the latest signal is desired:
@@ -40,6 +41,7 @@ class ProphetMomentumStrategy(BaseStrategy):
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )

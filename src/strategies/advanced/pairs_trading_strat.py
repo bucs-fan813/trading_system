@@ -54,7 +54,7 @@ class PairsTrading(BaseStrategy):
             - 'pvalue_threshold': Significance threshold for the Engle-Granger cointegration test (default: 0.05)
             - 'min_data_points': Minimum necessary data points for analysis (default: 252)
             - 'use_johansen': Flag to enable the Johansen test for cointegration (default: False)
-            - Risk parameters: 'stop_loss_pct', 'take_profit_pct', 'slippage_pct', and 'transaction_cost_pct'
+            - Risk parameters: 'stop_loss_pct', 'take_profit_pct', 'trailing_stop_pct','slippage_pct', and 'transaction_cost_pct'
     """
 
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict[str, Any]] = None):
@@ -70,6 +70,7 @@ class PairsTrading(BaseStrategy):
             'use_johansen': False,  # Set to True to enable Johansen test for cointegration.
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001
         }
@@ -81,6 +82,7 @@ class PairsTrading(BaseStrategy):
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params['stop_loss_pct'],
             take_profit_pct=self.params['take_profit_pct'],
+            trailing_stop_pct=self.params['trailing_stop_pct'],
             slippage_pct=self.params['slippage_pct'],
             transaction_cost_pct=self.params['transaction_cost_pct']
         )
