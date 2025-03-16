@@ -1,3 +1,5 @@
+# trading_system/src/strategies/advanced/garchx_strat.py
+
 """
 GARCH‑X Strategy Implementation
 
@@ -26,6 +28,7 @@ import os
 import numpy as np
 import pandas as pd
 import logging
+import pickle  # added for saving/loading trained model files
 from typing import Dict, Optional, Union, List, Tuple
 
 from arch import arch_model
@@ -54,6 +57,7 @@ class GarchXStrategy(BaseStrategy):
                     * 'take_profit_pct' (default: 0.10)
                     * 'slippage_pct' (default: 0.001)
                     * 'transaction_cost_pct' (default: 0.001)
+                - 'mode': str, either "train" to fit & save the model or "forecast" to use an existing saved model (default: "train")
         """
         default_params = {
             'forecast_horizon': 30,
@@ -70,6 +74,8 @@ class GarchXStrategy(BaseStrategy):
             'trail_stop_pct': 0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
+            # Mode parameter: "train" will fit a model and store it; "forecast" will load an existing model.
+            'mode': "train",
         }
         default_params.update(params or {})
         super().__init__(db_config, default_params)
@@ -81,7 +87,10 @@ class GarchXStrategy(BaseStrategy):
         self.vol_window = int(self.params.get('vol_window'))
         self.long_only = bool(self.params.get('long_only'))
         self.capital = float(self.params.get('capital'))
-
+        
+        # Mode: "train" or "forecast"
+        self.mode = self.params.get("mode", "train")
+        
         risk_params = {
             'stop_loss_pct': self.params.get('stop_loss_pct'),
             'take_profit_pct': self.params.get('take_profit_pct'),
@@ -183,7 +192,7 @@ class GarchXStrategy(BaseStrategy):
           2. Derives volume-related features (including log transform, rolling mean/STD, z-score, and ratio).
           3. Calculates price range features based on high, low, open, and close prices.
           4. Computes volatility proxies using both the Parkinson and a simplified Yang–Zhang method.
-          5. Generates lag features for log return, volume z-score, and high-low range to serve as exogenous regressors.
+          5. Generates lag features for log return, volume z-score, and high-low range for lags 1 to 5.
           6. Applies a rolling forecast (or single-point forecast) using an EGARCH‑X model.
 
         Parameters:
@@ -292,6 +301,10 @@ class GarchXStrategy(BaseStrategy):
           - Tries multiple candidate EGARCH configurations and selects the one with the lowest AIC.
           - In case all candidate models fail to fit, falls back to an EWMA forecast.
 
+        Additionally:
+          - In "train" mode, the fitted model (along with its PCA object and configuration) is saved to disk.
+          - In "forecast" mode, the saved model file is loaded and used directly to generate the forecast.
+
         Parameters:
             train (pd.DataFrame): Training data for model fitting.
             horizon (int): Forecast horizon (number of days ahead).
@@ -303,91 +316,156 @@ class GarchXStrategy(BaseStrategy):
                 - signal_strength (float): Risk-adjusted signal strength value.
                 - position_size (float): Computed position sizing value based on forecast volatility and allocated capital.
         """
-        # Specify lag features to serve as exogenous regressors.
-        exog_cols = (
-            [f"lag{l}_return" for l in range(1, 6)] +
-            [f"lag{l}_vol" for l in range(1, 6)] +
-            [f"lag{l}_hl" for l in range(1, 6)]
-        )
-        X_train = train[exog_cols].copy()
-        y_train = train["log_return"].copy()
+        # If operating in forecast mode, load the pre-trained model from file.
+        if self.mode == "forecast":
+            model_pickle_file = os.path.join(self.model_config_folder, "trained_model.pkl")
+            if not os.path.exists(model_pickle_file):
+                self.logger.error("Pre-trained model file not found. Run in train mode first.")
+                raise Exception("Pre-trained model file not found. Run in train mode first.")
+            with open(model_pickle_file, "rb") as f:
+                model_data = pickle.load(f)
+            best_result = model_data["model"]
+            pca = model_data["pca"]
+            n_components = model_data["n_components"]
 
-        # Apply winsorization to each column using training sample quantiles (1% and 99%) to limit the influence of outliers.
-        for col in X_train.columns:
-            lower = X_train[col].quantile(self.winsorize_quantiles[0])
-            upper = X_train[col].quantile(self.winsorize_quantiles[1])
-            X_train[col] = X_train[col].clip(lower, upper)
-        lower_y = y_train.quantile(self.winsorize_quantiles[0])
-        upper_y = y_train.quantile(self.winsorize_quantiles[1])
-        y_train = y_train.clip(lower_y, upper_y)
-
-        # Reduce feature dimensionality and mitigate multicollinearity via PCA.
-        n_components = min(self.pca_components, X_train.shape[1])
-        pca = PCA(n_components=n_components)
-        X_train_pca = pd.DataFrame(pca.fit_transform(X_train),
-                                   index=X_train.index,
-                                   columns=[f'pca_{i}' for i in range(n_components)])
-
-        # Define candidate orders for the EGARCH model for model selection based on AIC.
-        candidate_orders = [(1, 1), (1, 2), (2, 1)]
-        best_aic = np.inf
-        best_result = None
-        best_order = None
-
-        for (p, q) in candidate_orders:
-            try:
-                model = arch_model(
-                    y_train,
-                    x=X_train_pca,
-                    mean="ARX",
-                    lags=0,  # Lags are provided via the exogenous PCA features.
-                    vol="EGARCH",
-                    p=p,
-                    q=q,
-                    dist="t"
-                )
-                res = model.fit(disp="off")
-                if res.aic < best_aic:
-                    best_aic = res.aic
-                    best_result = res
-                    best_order = (p, q)
-            except Exception as e:
-                self.logger.warning(f"EGARCH({p},{q}) model failed: {e}")
-                continue
-
-        # Log the selected EGARCH model configuration (order and AIC) for tracking.
-        model_filename = os.path.join(self.model_config_folder, "model_config.txt")
-        if best_order is not None:
-            with open(model_filename, "a") as f:
-                f.write(f"Ticker: [unknown] | Best Order: EGARCH{best_order} | AIC: {best_aic}\n")
+            # Prepare exogenous regressors using the same winsorization as in training.
+            exog_cols = (
+                [f"lag{l}_return" for l in range(1, 6)] +
+                [f"lag{l}_vol" for l in range(1, 6)] +
+                [f"lag{l}_hl" for l in range(1, 6)]
+            )
+            X_train = train[exog_cols].copy()
+            for col in X_train.columns:
+                lower = X_train[col].quantile(self.winsorize_quantiles[0])
+                upper = X_train[col].quantile(self.winsorize_quantiles[1])
+                X_train[col] = X_train[col].clip(lower, upper)
+            last_exog = X_train.iloc[-1].values.reshape(1, -1)
+            last_exog_pca = pca.transform(last_exog)
+            X_forecast_pca = pd.DataFrame(
+                np.tile(last_exog_pca, (horizon, 1)),
+                columns=[f'pca_{i}' for i in range(n_components)]
+            )
+            forecast = best_result.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
+            fc_means = forecast.mean.iloc[-1].values
+            cumulative_ret = np.exp(np.sum(fc_means)) - 1
+            forecast_vol = np.sqrt(forecast.variance.iloc[-1].mean())
         else:
-            self.logger.error("All candidate EGARCH models failed. Falling back to EWMA.")
+            # Train Mode: Fit candidate EGARCH models.
+            exog_cols = (
+                [f"lag{l}_return" for l in range(1, 6)] +
+                [f"lag{l}_vol" for l in range(1, 6)] +
+                [f"lag{l}_hl" for l in range(1, 6)]
+            )
+            X_train = train[exog_cols].copy()
+            y_train = train["log_return"].copy()
 
-        try:
-            if best_result is not None:
-                # Transform the most recent exogenous features using the same PCA transformation
-                # and replicate them to align with the forecast horizon.
-                last_exog = X_train.iloc[-1].values.reshape(1, -1)
-                last_exog_pca = pca.transform(last_exog)
-                X_forecast_pca = pd.DataFrame(
-                    np.tile(last_exog_pca, (horizon, 1)),
-                    columns=[f'pca_{i}' for i in range(n_components)]
-                )
-                forecast = best_result.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
-                # Calculate the cumulative forecasted return by exponentiating the sum of forecasted log returns and subtracting 1.
-                fc_means = forecast.mean.iloc[-1].values
-                cumulative_ret = np.exp(np.sum(fc_means)) - 1
-                # Obtain an overall forecasted volatility as the square root of the mean forecasted variance.
-                forecast_vol = np.sqrt(forecast.variance.iloc[-1].mean())
-                avg_fc_ret = cumulative_ret  # Use cumulative return as the representative forecast signal.
+            # Apply winsorization to each column using training sample quantiles (1% and 99%) to limit the influence of outliers.
+            for col in X_train.columns:
+                lower = X_train[col].quantile(self.winsorize_quantiles[0])
+                upper = X_train[col].quantile(self.winsorize_quantiles[1])
+                X_train[col] = X_train[col].clip(lower, upper)
+            lower_y = y_train.quantile(self.winsorize_quantiles[0])
+            upper_y = y_train.quantile(self.winsorize_quantiles[1])
+            y_train = y_train.clip(lower_y, upper_y)
+
+            # Reduce feature dimensionality and mitigate multicollinearity via PCA.
+            n_components = min(self.pca_components, X_train.shape[1])
+            pca = PCA(n_components=n_components)
+            X_train_pca = pd.DataFrame(pca.fit_transform(X_train),
+                                       index=X_train.index,
+                                       columns=[f'pca_{i}' for i in range(n_components)])
+
+            # Define candidate orders for the EGARCH model for model selection based on AIC.
+            candidate_orders = [(1, 1), (1, 2), (2, 1)]
+            best_aic = np.inf
+            best_result = None
+            best_order = None
+
+            for (p, q) in candidate_orders:
+                try:
+                    model = arch_model(
+                        y_train,
+                        x=X_train_pca,
+                        mean="ARX",
+                        lags=0,  # Lags are provided via the exogenous PCA features.
+                        vol="EGARCH",
+                        p=p,
+                        q=q,
+                        dist="t"
+                    )
+                    res = model.fit(disp="off")
+                    if res.aic < best_aic:
+                        best_aic = res.aic
+                        best_result = res
+                        best_order = (p, q)
+                except Exception as e:
+                    self.logger.warning(f"EGARCH({p},{q}) model failed: {e}")
+                    continue
+
+            # Log the selected EGARCH model configuration (order and AIC) for tracking.
+            model_filename_txt = os.path.join(self.model_config_folder, "model_config.txt")
+            if best_order is not None:
+                with open(model_filename_txt, "a") as f:
+                    f.write(f"Ticker: [unknown] | Best Order: EGARCH{best_order} | AIC: {best_aic}\n")
             else:
-                raise Exception("No suitable EGARCH model fitted.")
+                self.logger.error("All candidate EGARCH models failed. Falling back to EWMA.")
 
-        except Exception as e:
-            self.logger.error(f"Forecasting error with EGARCH model: {e}. Using EWMA fallback.")
-            avg_fc_ret = train['log_return'].ewm(span=30).mean().iloc[-1]
-            forecast_vol = train['parkinson_vol'].iloc[-1]  # Use Parkinson volatility as a fallback proxy.
-            cumulative_ret = avg_fc_ret  # Fallback cumulative return based on EWMA.
+            try:
+                if best_result is not None:
+                    # Transform the most recent exogenous features using the same PCA transformation
+                    # and replicate them to align with the forecast horizon.
+                    last_exog = X_train.iloc[-1].values.reshape(1, -1)
+                    last_exog_pca = pca.transform(last_exog)
+                    X_forecast_pca = pd.DataFrame(
+                        np.tile(last_exog_pca, (horizon, 1)),
+                        columns=[f'pca_{i}' for i in range(n_components)]
+                    )
+                    forecast = best_result.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
+                    # Calculate the cumulative forecasted return by exponentiating the sum of forecasted log returns and subtracting 1.
+                    fc_means = forecast.mean.iloc[-1].values
+                    cumulative_ret = np.exp(np.sum(fc_means)) - 1
+                    # Obtain an overall forecasted volatility as the square root of the mean forecasted variance.
+                    forecast_vol = np.sqrt(forecast.variance.iloc[-1].mean())
+                    avg_fc_ret = cumulative_ret  # Use cumulative return as the representative forecast signal.
+                else:
+                    raise Exception("No suitable EGARCH model fitted.")
+
+            except Exception as e:
+                self.logger.error(f"Forecasting error with EGARCH model: {e}. Using EWMA fallback.")
+                avg_fc_ret = train['log_return'].ewm(span=30).mean().iloc[-1]
+                forecast_vol = train['parkinson_vol'].iloc[-1]  # Use Parkinson volatility as a fallback proxy.
+                cumulative_ret = avg_fc_ret  # Fallback cumulative return based on EWMA.
+
+            # Calculate a risk-adjusted return by normalizing the cumulative return with forecast volatility.
+            if forecast_vol > 0:
+                risk_adj_return = cumulative_ret / forecast_vol
+            else:
+                risk_adj_return = 0.0
+
+            vol_strength = train["vol_z"].iloc[-1]
+            signal_strength = risk_adj_return * vol_strength
+
+            # Generate the trading signal based on risk-adjusted return and volume strength.
+            if risk_adj_return > 0 and vol_strength > self.min_volume_strength:
+                sig = 1
+            elif risk_adj_return < 0 and vol_strength > self.min_volume_strength:
+                sig = 0 if self.long_only else -1
+            else:
+                sig = 0
+
+            # Compute the position size based on the risk-adjusted return scaled by the allocated capital.
+            position_size = risk_adj_return * self.capital
+
+            # In train mode, save the fitted model and PCA transformation for later forecasting.
+            model_pickle_file = os.path.join(self.model_config_folder, "trained_model.pkl")
+            if best_result is not None:
+                model_data = {
+                    "model": best_result,
+                    "pca": pca,
+                    "n_components": n_components,
+                }
+                with open(model_pickle_file, "wb") as f:
+                    pickle.dump(model_data, f)
 
         # Calculate a risk-adjusted return by normalizing the cumulative return with forecast volatility.
         if forecast_vol > 0:
