@@ -11,7 +11,7 @@ from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
 from scipy import stats
 from hmmlearn.hmm import GaussianHMM
 import concurrent.futures
-from typing import  Union, List
+from typing import Union, List
 
 from src.strategies.base_strat import BaseStrategy
 from src.database.config import DatabaseConfig
@@ -27,13 +27,22 @@ class ProphetMomentumStrategy(BaseStrategy):
             'horizon_short': 7,
             'horizon_mid': 14,
             'horizon_long': 30,
+            't_stat_threshold_long': 2,
+            't_stat_threshold_short': -2,
+            'vol_window': 21,
+            'hmm_states': 2,
+            'regime_override': True,
+            'rsi_period': 14,
+            # Risk management parameters
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'trailing_stop_pct': 0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             # additional flag if only the latest signal is desired:
-            'latest_only': False
+            'latest_only': False,
+            # Mode can be 'train' or 'forecast'
+            'mode': 'train',
         }
         if params:
             default_params.update(params)
@@ -45,10 +54,22 @@ class ProphetMomentumStrategy(BaseStrategy):
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )
+
+        self.t_stat_threshold_long = self.params.get('t_stat_threshold_long', 2)
+        self.t_stat_threshold_short = self.params.get('t_stat_threshold_short', -2)
+
+        self.vol_window = self.params.get('vol_window', 21)
+        self.hmm_states = self.params.get('hmm_states', 2)
+        self.regime_override = self.params.get('regime_override', True)
+
+        self.rsi_period = self.params.get('rsi_period', 14)
+
         # Create directory for caching final models.
         self.model_dir = os.path.join("trading_system", "models", "prophet_momentum")
         os.makedirs(self.model_dir, exist_ok=True)
         self.logger = logging.getLogger(self.__class__.__name__)
+        # Set the mode: either 'train' (default) or 'forecast'
+        self.mode = self.params.get("mode", "train")
 
     def _tune_hyperparameters(self, df_cv: pd.DataFrame) -> dict:
         """
@@ -132,11 +153,11 @@ class ProphetMomentumStrategy(BaseStrategy):
 
         # Define the search space; using a nested hp.choice so that the best dictionary is returned.
         search_space = {
-            'changepoint_prior_scale': hp.uniform('changepoint_prior_scale', 0.001, 0.5),
-            'seasonality_prior_scale': hp.uniform('seasonality_prior_scale', 0.01, 10),
-            'holidays_prior_scale': hp.uniform('holidays_prior_scale', 0.01, 10),
+            'changepoint_prior_scale': hp.loguniform('changepoint_prior_scale', np.log(0.001), np.log(0.5)),
+            'seasonality_prior_scale': hp.loguniform('seasonality_prior_scale', np.log(0.01), np.log(15)),
+            'holidays_prior_scale': hp.loguniform('holidays_prior_scale', np.log(0.01), np.log(15)),
             'seasonality_mode': hp.choice('seasonality_mode', ['additive', 'multiplicative']),
-            'fourier_order': hp.quniform('fourier_order', 3, 20, 1)
+            'fourier_order': hp.quniform('fourier_order', 3, 15, 1)
         }
 
         trials = Trials()
@@ -176,9 +197,9 @@ class ProphetMomentumStrategy(BaseStrategy):
         """
         df_sorted = df.sort_values(by='ds')
         df_sorted['return'] = df_sorted['y'].pct_change().fillna(0)
-        volatility = df_sorted['return'].rolling(window=21).std().fillna(0)
+        volatility = df_sorted['return'].rolling(window=self.vol_window).std().fillna(0)
         try:
-            model = GaussianHMM(n_components=2, covariance_type="diag", n_iter=100)
+            model = GaussianHMM(n_components=self.hmm_states, covariance_type="diag", n_iter=100)
             reshaped_vol = volatility.values.reshape(-1, 1)
             model.fit(reshaped_vol)
             hidden_states = model.predict(reshaped_vol)
@@ -198,8 +219,9 @@ class ProphetMomentumStrategy(BaseStrategy):
           • Filter the latest 3 years (for CV and final training)
           • Compute technical indicators (e.g. RSI)
           • Detect market regime (HMM on volatility)
-          • Load a cached model if available; otherwise run hyperparameter tuning
-          • Train a final Prophet model (with extra regressors)
+          • Load a cached model if available; otherwise run hyperparameter tuning (only in train mode)
+          • Train a final Prophet model (with extra regressors) in train mode,
+            or use the loaded model in forecast mode.
           • Forecast future prices (for horizon_short, mid, long)
           • Use confidence intervals along with a t–test on forecast slope
           • Decide on a probabilistic trading signal and strength.
@@ -229,48 +251,84 @@ class ProphetMomentumStrategy(BaseStrategy):
         delta = df_recent['y'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14, min_periods=14).mean()
-        avg_loss = loss.rolling(window=14, min_periods=14).mean()
+        avg_gain = gain.rolling(window=self.rsi_period, min_periods=self.rsi_period).mean()
+        avg_loss = loss.rolling(window=self.rsi_period, min_periods=self.rsi_period).mean()
         df_recent['rsi'] = 100 - (100 / (1 + avg_gain / (avg_loss + 1e-6)))
         df_recent.fillna(method='bfill', inplace=True)
 
         # Detect market regime.
-        high_vol_regime = self._detect_market_regime(df_recent)
+        if self.regime_override:
+            high_vol_regime = self._detect_market_regime(df_recent)
 
         # Prepare a cached model filepath.
         model_filepath = os.path.join(self.model_dir, f"{ticker}.pkl")
-        model_cached = None
-        if os.path.exists(model_filepath):
-            try:
-                model_cached = joblib.load(model_filepath)
-            except Exception as e:
-                self.logger.warning(f"Error loading cached model for {ticker}: {e}")
-
-        if model_cached is None:
-            # Tune hyperparameters using forward crossvalidation.
-            best_params = self._tune_hyperparameters(df_recent)
+        if self.mode == "forecast":
+            model_final = None
+            if os.path.exists(model_filepath):
+                try:
+                    model_final = joblib.load(model_filepath)
+                except Exception as e:
+                    self.logger.warning(f"Error loading cached model for {ticker} in forecast mode: {e}. Proceeding to train mode for {ticker}.")
+            else:
+                self.logger.warning(f"Model file for {ticker} not found in forecast mode. Proceeding to train mode for {ticker}.")
+            if model_final is None:
+                # Fallback: Train mode for this ticker.
+                model_cached = None
+                if os.path.exists(model_filepath):
+                    try:
+                        model_cached = joblib.load(model_filepath)
+                    except Exception as e:
+                        self.logger.warning(f"Error loading cached model for {ticker}: {e}")
+                if model_cached is None:
+                    best_params = self._tune_hyperparameters(df_recent)
+                else:
+                    best_params = getattr(model_cached, 'hyper_parameters', None)
+                    if best_params is None:
+                        best_params = self._tune_hyperparameters(df_recent)
+                model_final = Prophet(
+                    changepoint_prior_scale=best_params['changepoint_prior_scale'],
+                    seasonality_prior_scale=best_params['seasonality_prior_scale'],
+                    holidays_prior_scale=best_params['holidays_prior_scale'],
+                    seasonality_mode=best_params['seasonality_mode']
+                )
+                model_final.add_seasonality(name='custom', period=365.25, fourier_order=best_params['fourier_order'])
+                for reg in ['volume', 'open', 'high', 'low', 'rsi']:
+                    model_final.add_regressor(reg)
+                model_final.fit(df_recent)
+                model_final.hyper_parameters = best_params
+                try:
+                    joblib.dump(model_final, model_filepath)
+                except Exception as e:
+                    self.logger.warning(f"Error saving model for {ticker}: {e}")
         else:
-            # If cached model contains stored hyperparameters use them.
-            best_params = getattr(model_cached, 'hyper_parameters', None)
-            if best_params is None:
+            model_cached = None
+            if os.path.exists(model_filepath):
+                try:
+                    model_cached = joblib.load(model_filepath)
+                except Exception as e:
+                    self.logger.warning(f"Error loading cached model for {ticker}: {e}")
+            if model_cached is None:
                 best_params = self._tune_hyperparameters(df_recent)
-
-        # Train final Prophet model on the full 3-years (df_recent)
-        model_final = Prophet(
-            changepoint_prior_scale=best_params['changepoint_prior_scale'],
-            seasonality_prior_scale=best_params['seasonality_prior_scale'],
-            holidays_prior_scale=best_params['holidays_prior_scale'],
-            seasonality_mode=best_params['seasonality_mode']
-        )
-        model_final.add_seasonality(name='custom', period=365.25, fourier_order=best_params['fourier_order'])
-        for reg in ['volume', 'open', 'high', 'low', 'rsi']:
-            model_final.add_regressor(reg)
-        model_final.fit(df_recent)
-        model_final.hyper_parameters = best_params
-        try:
-            joblib.dump(model_final, model_filepath)
-        except Exception as e:
-            self.logger.warning(f"Error saving model for {ticker}: {e}")
+            else:
+                best_params = getattr(model_cached, 'hyper_parameters', None)
+                if best_params is None:
+                    best_params = self._tune_hyperparameters(df_recent)
+            # Train final Prophet model on the full 3-years (df_recent)
+            model_final = Prophet(
+                changepoint_prior_scale=best_params['changepoint_prior_scale'],
+                seasonality_prior_scale=best_params['seasonality_prior_scale'],
+                holidays_prior_scale=best_params['holidays_prior_scale'],
+                seasonality_mode=best_params['seasonality_mode']
+            )
+            model_final.add_seasonality(name='custom', period=365.25, fourier_order=best_params['fourier_order'])
+            for reg in ['volume', 'open', 'high', 'low', 'rsi']:
+                model_final.add_regressor(reg)
+            model_final.fit(df_recent)
+            model_final.hyper_parameters = best_params
+            try:
+                joblib.dump(model_final, model_filepath)
+            except Exception as e:
+                self.logger.warning(f"Error saving model for {ticker}: {e}")
 
         # Forecast into the future (up to horizon_long days)
         horizon_long = self.params.get('horizon_long', 30)
@@ -328,9 +386,9 @@ class ProphetMomentumStrategy(BaseStrategy):
         #   (ii) f_long_lower < f_mid_upper
         #   (iii) t_stat < -2 (slope significantly negative)
         signal = 0
-        if (f_short_lower > current_price and f_long_upper > f_mid_lower and t_stat > 2):
+        if (f_short_lower > current_price and f_long_upper > f_mid_lower and t_stat > self.t_stat_threshold_long):
             signal = 1
-        elif (f_short_upper < current_price and f_long_lower < f_mid_upper and t_stat < -2):
+        elif (f_short_upper < current_price and f_long_lower < f_mid_upper and t_stat < self.t_stat_threshold_short):
             signal = -1
 
         # Compute a weighted signal strength.
