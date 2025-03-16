@@ -59,11 +59,15 @@ class GarchXStrategy(BaseStrategy):
             'forecast_horizon': 30,
             'forecast_lookback': 200,
             'min_volume_strength': 1.0,
+            'pca_components': 5,
+            'winsorize_quantiles': (0.01, 0.99),
+            'vol_window': 20,
             'long_only': True,
             'capital': 1.0,
             # Risk parameters
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trail_stop_pct': 0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
         }
@@ -72,12 +76,16 @@ class GarchXStrategy(BaseStrategy):
         self.forecast_horizon = int(self.params.get('forecast_horizon'))
         self.forecast_lookback = int(self.params.get('forecast_lookback'))
         self.min_volume_strength = float(self.params.get('min_volume_strength'))
+        self.pca_components = int(self.params.get('pca_components'))
+        self.winsorize_quantiles = self.params.get('winsorize_quantiles')
+        self.vol_window = int(self.params.get('vol_window'))
         self.long_only = bool(self.params.get('long_only'))
         self.capital = float(self.params.get('capital'))
 
         risk_params = {
             'stop_loss_pct': self.params.get('stop_loss_pct'),
             'take_profit_pct': self.params.get('take_profit_pct'),
+            'trail_stop_pct': self.params.get('trail_stop_pct'),
             'slippage_pct': self.params.get('slippage_pct'),
             'transaction_cost_pct': self.params.get('transaction_cost_pct'),
         }
@@ -200,10 +208,10 @@ class GarchXStrategy(BaseStrategy):
         # 2. Compute volume-related features: log(volume), moving window mean and standard deviation, standardized volume,
         #    and ratio relative to a 20-day moving average.
         df["vol_log"] = np.log(df["volume"])
-        df["vol_mean"] = df["vol_log"].rolling(window=20, min_periods=20).mean()
-        df["vol_std"] = df["vol_log"].rolling(window=20, min_periods=20).std()
+        df["vol_mean"] = df["vol_log"].rolling(window=self.vol_window, min_periods=self.vol_window).mean()
+        df["vol_std"] = df["vol_log"].rolling(window=self.vol_window, min_periods=self.vol_window).std()
         df["vol_z"] = (df["vol_log"] - df["vol_mean"]) / df["vol_std"]
-        df["vol_ratio"] = df["volume"] / df["volume"].rolling(window=20, min_periods=20).mean()
+        df["vol_ratio"] = df["volume"] / df["volume"].rolling(window=self.vol_window, min_periods=self.vol_window).mean()
         
         # 3. Calculate price range features based on high-low and open-close differences.
         df["hl_range"] = (df["high"] - df["low"]) / df["close"].shift(1)
@@ -306,15 +314,15 @@ class GarchXStrategy(BaseStrategy):
 
         # Apply winsorization to each column using training sample quantiles (1% and 99%) to limit the influence of outliers.
         for col in X_train.columns:
-            lower = X_train[col].quantile(0.01)
-            upper = X_train[col].quantile(0.99)
+            lower = X_train[col].quantile(self.winsorize_quantiles[0])
+            upper = X_train[col].quantile(self.winsorize_quantiles[1])
             X_train[col] = X_train[col].clip(lower, upper)
-        lower_y = y_train.quantile(0.01)
-        upper_y = y_train.quantile(0.99)
+        lower_y = y_train.quantile(self.winsorize_quantiles[0])
+        upper_y = y_train.quantile(self.winsorize_quantiles[1])
         y_train = y_train.clip(lower_y, upper_y)
 
         # Reduce feature dimensionality and mitigate multicollinearity via PCA.
-        n_components = min(5, X_train.shape[1])
+        n_components = min(self.pca_components, X_train.shape[1])
         pca = PCA(n_components=n_components)
         X_train_pca = pd.DataFrame(pca.fit_transform(X_train),
                                    index=X_train.index,

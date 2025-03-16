@@ -58,6 +58,8 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
                 - 'pressure_trend_window' (default: 5): Window for pressure trend calculation
                 - 'stop_loss_pct' (default: 0.05): Stop loss percentage
                 - 'take_profit_pct' (default: 0.10): Take profit percentage
+                - 'trailing_stop_pct' (default: 0): Fractional distance from the peak (for long) or trough (for short)
+                                   that the price is allowed to reverse before the trade is exited.
                 - 'slippage_pct' (default: 0.001): Slippage percentage
                 - 'transaction_cost_pct' (default: 0.001): Transaction cost percentage
                 - 'bull_div_threshold' (default: 0.01): Threshold for bullish divergence
@@ -73,7 +75,7 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             'price_trend_window': 5,
             'pressure_trend_window': 5,
             'bull_div_threshold': 0.01,
-            'bear_div_threshold': 0.01
+            'bear_div_threshold': 0.01,
         }
         params = params or default_params
         super().__init__(db_config, params)
@@ -97,8 +99,9 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         risk_params = {
             'stop_loss_pct': params.get('stop_loss_pct', 0.05),
             'take_profit_pct': params.get('take_profit_pct', 0.10),
+            'trail_stop_pct': params.get('trailing_stop_pct', 0),
             'slippage_pct': params.get('slippage_pct', 0.001),
-            'transaction_cost_pct': params.get('transaction_cost_pct', 0.001)
+            'transaction_cost_pct': params.get('transaction_cost_pct', 0.001),
         }
         self.risk_manager = RiskManager(**risk_params)
     
