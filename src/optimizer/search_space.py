@@ -109,3 +109,66 @@ prophet_momentum_strat_search_space = {
     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),
     'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0, 0.05)
 }
+
+cup_and_handle_strat_search_space = {
+    # Cup detection parameters
+    'min_cup_duration': hp.quniform('min_cup_duration', 20, 60, 1),  # Longer durations for daily timeframe
+    'max_cup_duration': hp.quniform('max_cup_duration', 100, 250, 5),  # Indian markets may form longer cups
+    'cup_depth_threshold': hp.uniform('cup_depth_threshold', 0.18, 0.40),  # Adjusted for Indian market volatility
+    
+    # Handle detection parameters
+    'min_handle_duration': hp.quniform('min_handle_duration', 5, 20, 1),  # Slightly longer handles
+    'max_handle_duration': hp.quniform('max_handle_duration', 25, 70, 2),  # Extended for Indian market
+    'handle_depth_threshold': hp.uniform('handle_depth_threshold', 0.25, 0.65),  # Adjusted range
+    
+    # Breakout parameters
+    'breakout_threshold': hp.loguniform('breakout_threshold', np.log(0.002), np.log(0.03)),  # Higher range for more volatile market
+    'volume_confirm': hp.choice('volume_confirm', [True, False]),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.12),  # Wider stops for Indian market volatility
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.25),  # Higher profit targets
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0, 0.05)
+}
+
+triangle_breakout_strat_search_space = {
+    # Pattern detection parameters
+    'min_points': hp.quniform('min_points', 4, 8, 1),  # Minimum points needed to fit trendlines
+    'max_lookback': hp.quniform('max_lookback', 30, 120, 5),  # Window size for pattern detection
+    
+    # Pattern significance parameters
+    'min_pattern_size': hp.uniform('min_pattern_size', 0.02, 0.08),  # Minimum triangle height as % of price
+    
+    # Breakout parameters
+    'breakout_threshold': hp.loguniform('breakout_threshold', np.log(0.003), np.log(0.015)),  # Price movement required to confirm breakout
+    'volume_confirm': hp.choice('volume_confirm', [True, False]),  # Whether to require volume confirmation
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.18),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0, 0.05)  # Trailing stop percentage
+}
+
+
+volume_breakout_strat_search_space = {
+    # Breakout detection parameters
+    'lookback_period': hp.quniform('lookback_period', 10, 50, 1),
+    'consecutive_bars': hp.quniform('consecutive_bars', 1, 5, 1),
+    
+    # Volume confirmation parameters
+    'volume_threshold': hp.uniform('volume_threshold', 1.2, 3.0),
+    'volume_avg_period': hp.quniform('volume_avg_period', 10, 40, 1),
+    
+    # Price movement parameters
+    'price_threshold': hp.uniform('price_threshold', 0.01, 0.05),
+    
+    # Volatility filter parameters
+    'use_atr_filter': hp.choice('use_atr_filter', [True, False]),
+    'atr_period': hp.quniform('atr_period', 10, 30, 1),
+    'atr_threshold': hp.uniform('atr_threshold', 0.5, 2.0),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),
+}

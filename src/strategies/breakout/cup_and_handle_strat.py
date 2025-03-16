@@ -53,6 +53,7 @@ class CupAndHandle(BaseStrategy):
         - volume_confirm (bool): Require volume confirmation for breakout (default: True).
         - stop_loss_pct (float): Stop loss percentage (default: 0.05).
         - take_profit_pct (float): Take profit percentage (default: 0.10).
+        - trailing_stop_pct (float): Trailing stop percentage (default: 0.0).
         - slippage_pct (float): Estimated slippage percentage (default: 0.001).
         - transaction_cost_pct (float): Estimated transaction cost percentage (default: 0.001).
         - long_only (bool): If True, only long positions are allowed (default: True).
@@ -78,6 +79,7 @@ class CupAndHandle(BaseStrategy):
             'volume_confirm': True,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True                   # This is a long only strategy by design and would work the same irrespecyive of the parameter
@@ -161,7 +163,8 @@ class CupAndHandle(BaseStrategy):
             stop_loss_pct=self.params['stop_loss_pct'],
             take_profit_pct=self.params['take_profit_pct'],
             slippage_pct=self.params['slippage_pct'],
-            transaction_cost_pct=self.params['transaction_cost_pct']
+            transaction_cost_pct=self.params['transaction_cost_pct'],
+            trailing_stop_pct=self.params['trailing_stop_pct']
         )
         result = rm.apply(result, initial_position=initial_position)
         

@@ -79,6 +79,7 @@ class VolumeBreakout(BaseStrategy):
             - atr_threshold (float): ATR multiplier threshold for signal filtering (default: 1.0).
             - stop_loss_pct (float): Stop loss percentage (default: 0.05).
             - take_profit_pct (float): Take profit percentage (default: 0.10).
+            - trailing_stop_pct (float): Trailing stop percentage (default: 0.0).
             - slippage_pct (float): Slippage percentage (default: 0.001).
             - transaction_cost_pct (float): Transaction cost percentage (default: 0.001).
             - long_only (bool): If True, only long trades are allowed (default: True).
@@ -94,6 +95,7 @@ class VolumeBreakout(BaseStrategy):
             'atr_threshold': 1.0,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -258,6 +260,7 @@ class VolumeBreakout(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params['stop_loss_pct'],
             take_profit_pct=self.params['take_profit_pct'],
+            trailing_stop_pct=self.params['trailing_stop_pct'],
             slippage_pct=self.params['slippage_pct'],
             transaction_cost_pct=self.params['transaction_cost_pct']
         )

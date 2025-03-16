@@ -1,7 +1,5 @@
 # trading_system/src/strategies/triangle_breakout.py
 
-# TODO Long only
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Union
@@ -53,6 +51,7 @@ class TriangleBreakout(BaseStrategy):
       - min_pattern_size (float): Minimum triangle height relative to price (0.03).
       - stop_loss_pct (float): Stop loss percentage (0.05).
       - take_profit_pct (float): Take profit percentage (0.10).
+      - trailing_stop_pct (float): Trailing stop percentage (0.0).
       - slippage_pct (float): Estimated slippage percentage (0.001).
       - transaction_cost_pct (float): Estimated transaction cost percentage (0.001).
       - long_only (bool): If True, only long positions are allowed (True).
@@ -74,6 +73,7 @@ class TriangleBreakout(BaseStrategy):
             'min_pattern_size': 0.03,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -242,6 +242,7 @@ class TriangleBreakout(BaseStrategy):
         rm = RiskManager(
             stop_loss_pct=self.params.get("stop_loss_pct", 0.05),
             take_profit_pct=self.params.get("take_profit_pct", 0.10),
+            trailing_stop_pct=self.params.get("trailing_stop_pct", 0.0),
             slippage_pct=self.params.get("slippage_pct", 0.001),
             transaction_cost_pct=self.params.get("transaction_cost_pct", 0.001)
         )
