@@ -47,6 +47,7 @@ class CCIStrategy(BaseStrategy):
         - 'data_source': str, data source identifier (default: 'yfinance').
         - 'stop_loss_pct': float, stop loss percentage (default: 0.05).
         - 'take_profit_pct': float, take profit percentage (default: 0.10).
+        - 'trailing_stop_pct': float, trailing stop percentage (default: 0.0).
         - 'slippage_pct': float, estimated slippage as a percentage of the price (default: 0.001).
         - 'transaction_cost_pct': float, estimated transaction cost as a percentage of the price (default: 0.001).
         - 'long_only': bool, if True, only long positions are allowed (default: True).
@@ -71,6 +72,7 @@ class CCIStrategy(BaseStrategy):
             'data_source': 'yfinance',
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -82,6 +84,7 @@ class CCIStrategy(BaseStrategy):
         self.risk_manager = RiskManager(
             stop_loss_pct=params['stop_loss_pct'],
             take_profit_pct=params['take_profit_pct'],
+            trailing_stop_pct=params['trailing_stop_pct'],
             slippage_pct=params['slippage_pct'],
             transaction_cost_pct=params['transaction_cost_pct']
         )

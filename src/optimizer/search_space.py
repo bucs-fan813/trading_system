@@ -172,3 +172,83 @@ volume_breakout_strat_search_space = {
     'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
     'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),
 }
+
+cci_oscillator_strat_search_space = {
+    # CCI calculation parameters
+    'cci_period': hp.quniform('cci_period', 10, 30, 1),  # Period for CCI calculation
+    'cci_upper_band': hp.quniform('cci_upper_band', 80, 200, 5),  # Upper threshold for sell signal
+    'cci_lower_band': hp.quniform('cci_lower_band', -200, -80, 5),  # Lower threshold for buy signal
+    
+    # Strategy configuration
+    'long_only': hp.choice('long_only', [True, False]),  # Whether to take short positions
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.01, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.02, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06)
+}
+
+disparity_index_strat_search_space = {
+    # Disparity Index parameters
+    'di_lookback': hp.quniform('di_lookback', 8, 30, 1),  # Shorter to longer MA periods
+    'consecutive_period': hp.quniform('consecutive_period', 2, 7, 1),  # More/less sensitive to reversals
+    
+    # Trading direction parameters
+    'long_only': hp.choice('long_only', [True, False]),  # Indian markets have uptick rule considerations
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Lower due to higher volatility in Indian markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Realistic profit targets for Indian stocks
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),  # Optional trailing stop
+}
+
+relative_strength_index_strat_search_space = {
+    # RSI Parameters
+    'rsi_period': hp.quniform('rsi_period', 10, 21, 1),  # Traditional RSI periods with focus on 14±7
+    'oversold': hp.uniform('oversold', 25.0, 35.0),      # Oversold thresholds
+    'overbought': hp.uniform('overbought', 65.0, 75.0),  # Overbought thresholds
+    
+    # Risk Management Parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Higher volatility in Indian markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Balanced risk-reward
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Optional trailing stop
+
+    # Strategy Configuration
+    'long_only': hp.choice('long_only', [True, False])  # Test both long-only and long-short
+}
+
+stochastic_oscillator_strat_search_space = {
+    # Stochastic Oscillator Parameters
+    'k_period': hp.quniform('k_period', 5, 21, 1),  # Lookback period for %K
+    'd_period': hp.quniform('d_period', 2, 7, 1),   # Smoothing period for %D
+    'overbought': hp.quniform('overbought', 70, 90, 1),  # Overbought threshold
+    'oversold': hp.quniform('oversold', 10, 30, 1),      # Oversold threshold
+    
+    # Risk Management Parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.015, 0.08),    # Wider range for Indian markets volatility
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.025, 0.15), # Balanced for Indian markets
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.07), # Trailing stop parameter
+    
+    # Strategy Configuration
+    'long_only': hp.choice('long_only', [True, False])  # Indian markets allow shorting with restrictions
+}
+
+williams_percent_r_strat_search_space = {
+    # Williams %R parameters
+    'wr_period': hp.quniform('wr_period', 10, 30, 1),  # Lookback period range suitable for Indian markets
+    'oversold_threshold': hp.uniform('oversold_threshold', -85, -75),  # Oversold threshold
+    'overbought_threshold': hp.uniform('overbought_threshold', -25, -15),  # Overbought threshold
+    
+    # Strategy behavior
+    'long_only': hp.choice('long_only', [True, False]),  # Test both long-only and long-short
+    'data_lookback': hp.quniform('data_lookback', 200, 500, 25),  # Data history required
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Higher volatility in Indian markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.15),  # Realistic profit targets
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.08),  # Optional trailing stop
+    
+    # Market friction parameters
+    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.001), np.log(0.005)),  # Higher for mid/small caps
+    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # Indian brokerages
+}

@@ -34,7 +34,7 @@ class StochasticStrategy(BaseStrategy):
     **Risk Management:**
       A RiskManager instance is used to:
         - Adjust the entry price by incorporating slippage and transaction costs.
-        - Calculate stop-loss / take-profit thresholds.
+        - Calculate stop-loss / take-profit thresholds / trailing stop.
         - Identify exit events (stop loss, take profit, or signal reversal).
         - Compute the realized trade return and cumulative return.
     
@@ -297,6 +297,7 @@ class StochasticStrategy(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.03),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )

@@ -59,6 +59,7 @@ class RSIStrategy(BaseStrategy):
             - 'oversold': Oversold threshold (default 30.0).
             - 'stop_loss_pct': Stop loss percentage (e.g., 0.05).
             - 'take_profit_pct': Take profit percentage (e.g., 0.10).
+            - 'trailing_stop_pct': Trailing stop percentage (e.g., 0.0).
             - 'slippage_pct': Slippage percentage (e.g., 0.001).
             - 'transaction_cost_pct': Transaction cost percentage (e.g., 0.001).
             - 'long_only': Flag to allow only long positions (default True).
@@ -138,7 +139,7 @@ class RSIStrategy(BaseStrategy):
 
         # Extract risk management parameters.
         risk_params = {k: self.params[k] for k in [
-            'stop_loss_pct', 'take_profit_pct', 
+            'stop_loss_pct', 'take_profit_pct', 'trailing_stop_pct',
             'slippage_pct', 'transaction_cost_pct'
         ] if k in self.params}
 

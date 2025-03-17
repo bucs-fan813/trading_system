@@ -1,4 +1,4 @@
-# trading_system/src/strategies/williams_r.py
+# trading_system/src/strategies/williams_percent_r.py
 
 import pandas as pd
 import numpy as np
@@ -59,6 +59,7 @@ class WilliamsRStrategy(BaseStrategy):
             - 'data_lookback': Number of records to retrieve if no date range is given (default: 252).
             - 'long_only': Flag for long-only trading (default: True).
             - 'stop_loss_pct': Stop loss percentage (default: 0.05).
+            - 'transaction_cost_pct': Transaction cost percentage (default: 0.0).
             - 'take_profit_pct': Take profit percentage (default: 0.10).
             - 'slippage_pct': Slippage percentage (default: 0.001).
             - 'transaction_cost_pct': Transaction cost percentage (default: 0.001).
@@ -127,6 +128,7 @@ class WilliamsRStrategy(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.0),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )
