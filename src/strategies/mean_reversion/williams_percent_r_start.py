@@ -59,7 +59,7 @@ class WilliamsRStrategy(BaseStrategy):
             - 'data_lookback': Number of records to retrieve if no date range is given (default: 252).
             - 'long_only': Flag for long-only trading (default: True).
             - 'stop_loss_pct': Stop loss percentage (default: 0.05).
-            - 'transaction_cost_pct': Transaction cost percentage (default: 0.0).
+            - 'trailing_stop_pct': Trailing Stop percentage (default: 0.0).
             - 'take_profit_pct': Take profit percentage (default: 0.10).
             - 'slippage_pct': Slippage percentage (default: 0.001).
             - 'transaction_cost_pct': Transaction cost percentage (default: 0.001).

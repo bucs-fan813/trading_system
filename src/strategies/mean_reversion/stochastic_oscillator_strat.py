@@ -297,7 +297,7 @@ class StochasticStrategy(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
-            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.03),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.00),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )
