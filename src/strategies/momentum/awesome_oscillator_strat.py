@@ -56,6 +56,7 @@ Strategy-specific parameters provided in `params` (with defaults):
     - 'long_only'   : If True, only long positions are allowed (default: True).
     - 'stop_loss_pct'         : Stop loss percentage (default: 0.05).
     - 'take_profit_pct'       : Take profit percentage (default: 0.10).
+    - 'trailing_stop_pct'     : Trailing stop percentage (default: 0.0).
     - 'slippage_pct'          : Slippage percentage (default: 0.001).
     - 'transaction_cost_pct'  : Transaction cost percentage (default: 0.001).
 """
@@ -82,6 +83,7 @@ class AwesomeOscillatorStrategy(BaseStrategy):
                 - 'long_only' (default: True)
                 - 'stop_loss_pct' (default: 0.05)
                 - 'take_profit_pct' (default: 0.10)
+                - 'trail_stop_pct' (default: 0.0)
                 - 'slippage_pct' (default: 0.001)
                 - 'transaction_cost_pct' (default: 0.001)
         """
@@ -99,6 +101,7 @@ class AwesomeOscillatorStrategy(BaseStrategy):
         risk_params = {
             'stop_loss_pct': params.get('stop_loss_pct', 0.05),
             'take_profit_pct': params.get('take_profit_pct', 0.10),
+            'trailing_stop_pct': params.get('trailing_stop_pct', 0.0),
             'slippage_pct': params.get('slippage_pct', 0.001),
             'transaction_cost_pct': params.get('transaction_cost_pct', 0.001)
         }

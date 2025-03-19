@@ -75,6 +75,7 @@ class SMAStrategy(BaseStrategy):
       - 'long_window'          : Window for long SMA (default: 50).
       - 'stop_loss_pct'        : Stop-loss percentage (default: 0.05).
       - 'take_profit_pct'      : Take-profit percentage (default: 0.10).
+      - 'trailing_stop_pct'    : Trailing stop percentage (default: 0.00).
       - 'slippage_pct'         : Slippage percentage (default: 0.001).
       - 'transaction_cost_pct' : Transaction cost percentage (default: 0.001).
       - 'long_only'            : If True, only long trades are allowed (default: True).
@@ -96,6 +97,7 @@ class SMAStrategy(BaseStrategy):
         self.long_window = self.params.get('long_window', 50)
         self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
         self.take_profit_pct = self.params.get('take_profit_pct', 0.10)
+        self.trailing_stop_pct = self.params.get('trailing_stop_pct', 0.00)
         self.slippage_pct = self.params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
         self.long_only = self.params.get('long_only', True)
@@ -167,6 +169,7 @@ class SMAStrategy(BaseStrategy):
                 risk_manager = RiskManager(
                     stop_loss_pct=self.stop_loss_pct,
                     take_profit_pct=self.take_profit_pct,
+                    trailing_stop_pct=self.trailing_stop_pct,
                     slippage_pct=self.slippage_pct,
                     transaction_cost_pct=self.transaction_cost_pct
                 )

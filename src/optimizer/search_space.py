@@ -252,3 +252,152 @@ williams_percent_r_strat_search_space = {
     'slippage_pct': hp.loguniform('slippage_pct', np.log(0.001), np.log(0.005)),  # Higher for mid/small caps
     'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # Indian brokerages
 }
+
+awesome_oscillator_strat_search_space = {
+    # Core AO parameters
+    'short_period': hp.quniform('short_period', 3, 15, 1),  # Short SMA period
+    'long_period': hp.quniform('long_period', 20, 60, 2),   # Long SMA period
+    
+    # Trading mode
+    'long_only': hp.choice('long_only', [True, False]),     # Allow only long positions or both long/short
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),         # Stop loss percentage (smaller for Indian markets due to volatility)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15),      # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),   # Trailing stop percentage
+}
+
+coppock_curve_strat_search_space = {
+    # ROC parameters
+    'roc1_months': hp.quniform('roc1_months', 10, 18, 1),  # Traditional is 14
+    'roc2_months': hp.quniform('roc2_months', 8, 14, 1),   # Traditional is 11
+    
+    # WMA lookback parameter
+    'wma_lookback': hp.quniform('wma_lookback', 6, 14, 1), # In months (default is 10)
+    
+    # Signal generation parameters
+    'method': hp.choice('method', ['zero_crossing', 'directional']),
+    'long_only': hp.choice('long_only', [True, False]),
+    
+    # For directional method
+    'sustain_days': hp.quniform('sustain_days', 3, 7, 1),
+    'trend_strength_threshold': hp.uniform('trend_strength_threshold', 0.6, 0.9),
+    
+    # Strength calculation
+    'strength_window': hp.quniform('strength_window', 252, 756, 63),  # ~1-3 years in trading days
+    'normalize_strength': hp.choice('normalize_strength', [True, False]),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.12),         # Higher for more volatile markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.25),     # Adjusted for Indian market volatility
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),   # Trailing stop percentage
+}
+
+know_sure_thing_strat_search_space = {
+    # KST ROC periods (typically shorter for Indian markets due to higher volatility)
+    'roc_periods': hp.choice('roc_periods', [
+        [8, 13, 21, 34],  # Fibonacci-based sequence
+        [10, 15, 20, 30],  # Traditional setup
+        [5, 10, 15, 20],   # Shorter timeframes for small caps
+        [12, 18, 24, 36]   # Longer timeframes for large caps
+    ]),
+    
+    # SMA smoothing periods
+    'sma_periods': hp.choice('sma_periods', [
+        [8, 8, 8, 13],     # More responsive
+        [10, 10, 10, 15],  # Traditional
+        [5, 5, 5, 10],     # Highly responsive for volatile markets
+        [15, 15, 15, 20]   # Less noise, smoother signals
+    ]),
+    
+    # Signal line period
+    'signal_period': hp.quniform('signal_period', 5, 15, 1),
+    
+    # KST weights for different ROC components
+    'kst_weights': hp.choice('kst_weights', [
+        [1, 2, 3, 4],      # Traditional ascending
+        [1, 1.5, 2, 2.5],  # More balanced
+        [1, 3, 5, 9],      # Emphasizing longer-term momentum
+        [4, 3, 2, 1]       # Emphasizing shorter-term momentum
+    ]),
+    
+    # Trading direction
+    'long_only': hp.choice('long_only', [True, False]),
+    
+    # Risk management parameters
+    'risk_params': {
+        'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Tighter for Indian markets
+        'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
+        'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05)
+    }
+}
+
+mcad_strat_search_space = {
+    # MACD Parameters
+    'fast': hp.quniform('fast', 8, 20, 1),       # Fast EMA period
+    'slow': hp.quniform('slow', 21, 50, 1),      # Slow EMA period
+    'smooth': hp.quniform('smooth', 5, 15, 1),   # Signal line smoothing period
+    
+    # Trading Mode
+    'long_only': hp.choice('long_only', [True, False]),
+    
+    # Risk Management Parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.01, 0.08),           # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.02, 0.15),       # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.10),    # Trailing stop percentage
+}
+
+relative_vigor_index_strat_search_space = {
+    # RVI calculation parameters
+    'lookback': hp.quniform('lookback', 7, 21, 1),  # SMA period for RVI smoothing
+    'signal_strength_window': hp.quniform('signal_strength_window', 10, 40, 2),  # Window for signal strength normalization
+    
+    # Trading mode
+    'long_only': hp.choice('long_only', [True, False]),  # Whether to allow short positions
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.20),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),  # Trailing stop percentage
+    
+    # Transaction cost parameters (adjusted for Indian markets)
+    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0003), np.log(0.002)),  # Estimated slippage
+    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # Trading costs
+}
+
+sma_crossover_strat_search_space = {
+    # SMA Parameters
+    'short_window': hp.quniform('short_window', 5, 30, 1),  # Short-term SMA window
+    'long_window': hp.quniform('long_window', 30, 200, 5),  # Long-term SMA window
+    
+    # Risk Management Parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop percentage
+    
+    # Execution Parameters
+    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0005), np.log(0.005)),  # Higher for less liquid Indian stocks
+    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0008), np.log(0.0025)),  # Indian brokerage + taxes
+    
+    # Strategy Mode
+    'long_only': hp.choice('long_only', [True, False])  # Indian markets allow short selling with restrictions
+}
+
+true_strength_index_strat_search_space = {
+    # TSI calculation parameters
+    'long_period': hp.quniform('long_period', 15, 45, 1),        # First smoothing period
+    'short_period': hp.quniform('short_period', 5, 20, 1),       # Second smoothing period
+    'signal_period': hp.quniform('signal_period', 5, 20, 1),     # Signal line period
+    
+    # Trading mode
+    'long_only': hp.choice('long_only', [True, False]),          # True for long-only, False for long-short
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.015, 0.06),   # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15), # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05), # Trailing stop percentage
+    
+    # Market friction parameters
+    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0008), np.log(0.005)),  # Higher for Indian markets
+    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0015), np.log(0.003))  # Higher for Indian markets
+}

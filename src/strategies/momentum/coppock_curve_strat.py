@@ -50,6 +50,7 @@ class CoppockCurveStrategy(BaseStrategy):
             - 'wma_lookback': Lookback window for WMA smoothing (default: 10, multiplied by 21 trading days)
             - 'stop_loss_pct': Stop loss percentage (default: 0.05)
             - 'take_profit_pct': Take profit percentage (default: 0.10)
+            - 'trailing_stop_pct': Trailing stop percentage (default: 0.0)
             - 'slippage_pct': Slippage as a fraction (default: 0.001)
             - 'transaction_cost_pct': Transaction cost as a fraction (default: 0.001)
             - 'strength_window': Lookback window for momentum strength normalization (default: 504)
@@ -106,6 +107,7 @@ class CoppockCurveStrategy(BaseStrategy):
         """
         self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
         self.take_profit_pct = self.params.get('take_profit_pct', 0.10)
+        self.trailing_stop_pct = self.params.get('trailing_stop_pct', 0.0)
         self.slippage_pct = self.params.get('slippage_pct', 0.001)
         self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
 

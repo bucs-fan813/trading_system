@@ -81,6 +81,7 @@ class KSTStrategy(BaseStrategy):
             'risk_params': {
                 'stop_loss_pct': 0.05,
                 'take_profit_pct': 0.10,
+                'trailing_stop_pct': 0.0,
                 'slippage_pct': 0.001,
                 'transaction_cost_pct': 0.001
             }

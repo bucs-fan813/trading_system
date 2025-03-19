@@ -60,7 +60,7 @@ class DisparityIndexStrategy(BaseStrategy):
       - take_profit_pct (float): Take profit percentage (default: 0.10).
       - slippage_pct (float): Slippage percentage (default: 0.001).
       - trailing_stop_pct (float): Trailing stop percentage (default: 0.0).
-      - transaction_cost_pct (float): Transaction cost percentage (default: 0.001).
+      - transaction_cost_pct (float): Transaction cost percentage (default: 0.00).
       - long_only (bool): Flag to allow only long positions (default: True).
 
     The strategy is designed to process a single ticker (str) or multiple tickers (List[str])
@@ -87,7 +87,7 @@ class DisparityIndexStrategy(BaseStrategy):
         self.take_profit_pct = params.get('take_profit_pct', 0.10)
         self.trailing_stop_pct = params.get('trailing_stop_pct', 0.0)
         self.slippage_pct = params.get('slippage_pct', 0.001)
-        self.transaction_cost_pct = params.get('transaction_cost_pct', 0.001)
+        self.transaction_cost_pct = params.get('transaction_cost_pct', 0.00)
         self.long_only = params.get('long_only', True)
         
         # Initialize RiskManager with provided risk parameters

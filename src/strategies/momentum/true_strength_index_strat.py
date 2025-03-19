@@ -60,6 +60,7 @@ class TSIStrategy(BaseStrategy):
         - signal_period (int): Period for the signal line (default: 12)
         - stop_loss_pct (float): Stop loss percentage (default: 0.05)
         - take_profit_pct (float): Take profit percentage (default: 0.10)
+        - trailing_stop_pct (float): Trailing stop percentage (default: 0.00)
         - slippage_pct (float): Slippage percentage (default: 0.001)
         - transaction_cost_pct (float): Transaction cost percentage (default: 0.001)
         - long_only (bool): If True, only long positions are allowed (default: True)
@@ -88,6 +89,7 @@ class TSIStrategy(BaseStrategy):
         
         self.stop_loss_pct = float(self.params.get('stop_loss_pct', 0.05))
         self.take_profit_pct = float(self.params.get('take_profit_pct', 0.10))
+        self.trailing_stop_pct = float(self.params.get('trailing_stop_pct', 0.00))
         self.slippage_pct = float(self.params.get('slippage_pct', 0.001))
         self.transaction_cost_pct = float(self.params.get('transaction_cost_pct', 0.001))
         self.long_only = bool(self.params.get('long_only', True))
@@ -164,6 +166,7 @@ class TSIStrategy(BaseStrategy):
         return RiskManager(
             stop_loss_pct=self.stop_loss_pct,
             take_profit_pct=self.take_profit_pct,
+            trailing_stop_pct=self.trailing_stop_pct,
             slippage_pct=self.slippage_pct,
             transaction_cost_pct=self.transaction_cost_pct
         )
