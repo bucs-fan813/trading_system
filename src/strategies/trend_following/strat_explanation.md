@@ -5,37 +5,38 @@
 
   1. **True Range (TR):**  
      For every period,  
-     \[
+     $$
      TR = \max\Big\{(\text{high} - \text{low}),\, |\text{high} - \text{close}_{prev}|,\, |\text{low} - \text{close}_{prev}|\Big\}
-     \]
+     $$
   
   2. **Directional Movements:**  
-     \[
+     $$
      \text{plusDM} = \begin{cases}
      \text{high}_i - \text{high}_{i-1} & \text{if } (\text{high}_i - \text{high}_{i-1}) > (\text{low}_{i-1} - \text{low}_i) \ \text{and} \ > 0 \\
      0 & \text{otherwise}
      \end{cases}
-     \]
-     \[
+     $$
+     
+     $$
      \text{minusDM} = \begin{cases}
      \text{low}_{i-1} - \text{low}_i & \text{if } (\text{low}_{i-1} - \text{low}_i) > (\text{high}_i - \text{high}_{i-1}) \ \text{and} \ > 0 \\
      0 & \text{otherwise}
      \end{cases}
-     \]
+     $$
   
   3. **Wilder’s Smoothing:**  
      The code uses a simple iterative smoothing (effectively an exponential moving average with \( \alpha = \frac{1}{\text{lookback}} \)) for TR, plusDM, and minusDM.  
      Then the smoothed values yield:  
-     \[
+     $$
      \text{DI+} = 100 \times \frac{\text{smooth}(\text{plusDM})}{ATR+\epsilon} \quad,\quad
      \text{DI–} = 100 \times \frac{\text{smooth}(\text{minusDM})}{ATR+\epsilon}
-     \]
+     $$
      The small \(\epsilon\) prevents division by zero.
   
   4. **Directional Index (DX) and ADX:**  
-     \[
+     $$
      DX = 100 \times \frac{|\text{DI+} - \text{DI–}|}{\text{DI+} + \text{DI–}+\epsilon} \quad,\quad ADX = \text{smooth}(DX)
-     \]
+     $$
   
   5. **Signal Generation:**  
      A new trade signal is generated when ADX “crosses above” 25 (i.e. on a transition from below 25 to at or above 25):
@@ -43,9 +44,9 @@
      - **Short Signal:** when DI– > DI+.
      
      Signal strength is defined as:
-     \[
+     $$
      \text{signal\_strength} = \frac{(\text{DI+}-\text{DI–})\times ADX}{100}
-     \]
+     $$
 
 I'll analyze the Aroon strategy, explain it in markdown, and provide a parameter search space for Indian market stocks.
 ---
@@ -220,6 +221,7 @@ The Parabolic SAR (Stop and Reverse) is a trend-following indicator designed to 
 The PSAR indicator is computed recursively as follows:
 
 For an **uptrend** (dots below the price):
+
 $$\text{PSAR}_{t} = \text{PSAR}_{t-1} + \text{AF}_{t-1} \times (\text{EP}_{t-1} - \text{PSAR}_{t-1})$$
 
 Where PSAR is bounded by the minimum of the previous two lows.
