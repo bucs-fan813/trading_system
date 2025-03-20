@@ -401,3 +401,112 @@ true_strength_index_strat_search_space = {
     'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0008), np.log(0.005)),  # Higher for Indian markets
     'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0015), np.log(0.003))  # Higher for Indian markets
 }
+
+adx_strat_search_space = {
+    # ADX parameters
+    'adx_lookback': hp.quniform('adx_lookback', 10, 30, 1),  # Traditional range is 14-21, expanded for Indian markets
+    'adx_threshold': hp.quniform('adx_threshold', 20, 30, 1),  # ADX threshold for trend strength
+    
+    # Trading mode
+    'long_only': hp.choice('long_only', [True, False]),  # Consider both long and short for complete evaluation
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Indian markets can be volatile, especially small caps
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Balanced risk-reward ratio
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05), # Trailing stop percentage
+}
+
+aroon_strat_search_space = {
+    # Aroon indicator parameters
+    'lookback': hp.quniform('lookback', 10, 50, 1),  # Period for Aroon calculation
+    'aroon_up_threshold': hp.quniform('aroon_up_threshold', 60, 80, 1),  # Threshold for Aroon Up (default 70)
+    'aroon_down_threshold': hp.quniform('aroon_down_threshold', 20, 40, 1),  # Threshold for Aroon Down (default 30)
+
+    'signal_smoothing': hp.quniform('signal_smoothing', 1, 5, 1),  # Optional smoothing for signal strength
+    
+    # Trading parameters
+    'long_only': hp.choice('long_only', [True, False]),  # Whether to allow short positions
+
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.01, 0.07),  # Suitable for Indian markets' volatility
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.02, 0.15),  # Conservative profits for Indian market
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.01, 0.08),  # Optional trailing stop
+}
+
+choppiness_index_strat_search_space = {
+    # Choppiness Index parameters
+    'ci_period': hp.quniform('ci_period', 10, 30, 1),  # Shorter periods for higher volatility in Indian markets
+    
+    # MACD parameters
+    'macd_fast': hp.quniform('macd_fast', 8, 16, 1),  # Standard is 12, but testing range for market adaptability
+    'macd_slow': hp.quniform('macd_slow', 20, 35, 1),  # Standard is 26, but testing range for market adaptability
+    'macd_smooth': hp.quniform('macd_smooth', 7, 12, 1),  # Standard is 9, modified for potential higher volatility
+    
+    # Strategy configuration
+    'long_only': hp.choice('long_only', [True, False]),  # Test both long-only and long-short approaches
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),  # Higher volatility in Indian markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.2),  # Potentially higher returns in growth markets
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),  # Optional trailing stop
+}   
+
+donchian_channel_strat_search_space = {
+    # Channel parameters
+    'lookback_period': hp.quniform('lookback_period', 15, 60, 1),  # Overall lookback period
+    'entry_lookback': hp.quniform('entry_lookback', 15, 60, 1),    # Entry channel lookback
+    'exit_lookback': hp.quniform('exit_lookback', 5, 30, 1),       # Exit channel lookback (typically shorter)
+    
+    # ATR filter parameters
+    'use_atr_filter': hp.choice('use_atr_filter', [True, False]),  # Whether to use ATR filter
+    'atr_period': hp.quniform('atr_period', 7, 21, 1),             # ATR calculation period
+    'atr_threshold': hp.uniform('atr_threshold', 0.5, 2.0),        # ATR threshold multiplier
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),      # Stop loss percentage (tighter for Indian markets)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take profit percentage
+    'trail_stop_pct': hp.uniform('trail_stop_pct', 0.0, 0.05),     # Trailing stop percentage
+
+    # Strategy type
+    'long_only': hp.choice('long_only', [True, False])  # Whether to allow short positions
+}
+
+ichimoku_cloud_strat_search_space = {
+    # Ichimoku components parameters
+    'tenkan_period': hp.quniform('tenkan_period', 7, 15, 1),             # Shorter periods for Indian market volatility
+    'kijun_period': hp.quniform('kijun_period', 20, 40, 1),              # Adjusted for Indian market cycles
+    'senkou_b_period': hp.quniform('senkou_b_period', 40, 70, 1),        # Wider range for different cap sizes
+    'displacement': hp.quniform('displacement', 20, 35, 1),              # Adjusted displacement for local market dynamics
+    
+    # Signal generation flags
+    'use_cloud_breakouts': hp.choice('use_cloud_breakouts', [True, False]),
+    'use_tk_cross': hp.choice('use_tk_cross', [True, False]),
+    'use_price_cross': hp.choice('use_price_cross', [True, False]),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),            # Indian markets can be volatile, especially mid/small caps
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),        # Reasonable profit targets for Indian stocks
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),     # Optional trailing stop
+    
+    # Strategy type
+    'long_only': hp.choice('long_only', [True, False])                   # Test both long-only and long-short approaches
+}
+
+parabolic_sar_strat_search_space = {
+    # PSAR core parameters
+    'initial_af': hp.uniform('initial_af', 0.01, 0.05),
+    'max_af': hp.uniform('max_af', 0.1, 0.3),
+    'af_step': hp.uniform('af_step', 0.01, 0.05),
+    
+    # ATR filter parameters
+    'use_atr_filter': hp.choice('use_atr_filter', [True, False]),
+    'atr_period': hp.quniform('atr_period', 10, 21, 1),
+    'atr_threshold': hp.uniform('atr_threshold', 0.8, 1.5),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.15),
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),
+    # Strategy behavior
+    'long_only': hp.choice('long_only', [True, False])
+}

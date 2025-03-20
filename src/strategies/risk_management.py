@@ -1,5 +1,9 @@
 """
-Risk Management Component
+TODO: Check if 
+1) position sizing
+2) volatility based filters 
+3) min signal strength based filters
+can be added as parameters to block trading Risk Management Component
 
 This module provides the RiskManager class that applies stop-loss and take-profit
 rules, along with slippage and transaction cost adjustments. In addition, this

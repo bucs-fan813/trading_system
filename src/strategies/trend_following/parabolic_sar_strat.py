@@ -76,6 +76,7 @@ class ParabolicSAR(BaseStrategy):
         - atr_threshold: ATR threshold multiplier for filtering (default: 1.0).
         - stop_loss_pct: Stop loss percentage (default: 0.05).
         - take_profit_pct: Take profit percentage (default: 0.10).
+        - trailing_stop_pct: Trailing stop percentage (default: 0.0).
         - slippage_pct: Slippage percentage (default: 0.001).
         - transaction_cost_pct: Transaction cost percentage (default: 0.001).
         - long_only: Whether to allow only long trades (default: True).
@@ -98,6 +99,7 @@ class ParabolicSAR(BaseStrategy):
             'atr_threshold': 1.0,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -233,6 +235,7 @@ class ParabolicSAR(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.0),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )

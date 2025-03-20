@@ -48,7 +48,7 @@ class ADXStrategy(BaseStrategy):
     ----------------
     After generating raw signals, the strategy applies risk management (via the RiskManager class)
     to determine the adjusted entry price (incorporating slippage and transaction cost) as well as 
-    the computation of stop-loss and take-profit thresholds. Exit events are marked if:
+    the computation of stop-loss, take-profit, trailing stop thresholds. Exit events are marked if:
     
       • For long trades: the day's low touches the stop-loss level or the high reaches the target.
       • For short trades: vice versa.
@@ -82,6 +82,7 @@ class ADXStrategy(BaseStrategy):
         - 'long_only'          : If True, only long positions are allowed (default: True).
         - 'stop_loss_pct'      : Stop loss percentage (default: 0.05).
         - 'take_profit_pct'    : Take profit percentage (default: 0.10).
+        - 'trailing_stop_pct'  : Trailing stop percentage (default: 0.00).
         - 'slippage'           : Slippage percentage (default: 0.001).
         - 'transaction_cost'   : Transaction cost percentage (default: 0.001).
     """
@@ -97,9 +98,11 @@ class ADXStrategy(BaseStrategy):
         super().__init__(db_config, params)
         self.default_lookback = 14  # Default ADX smoothing period if not provided.
         self.long_only = self.params.get('long_only', True)
+        self.adx_threshold = self.params.get('adx_threshold', 25)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.00),
             slippage_pct=self.params.get('slippage', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost', 0.001)
         )
@@ -308,9 +311,9 @@ class ADXStrategy(BaseStrategy):
         """
         Generate trading signals and signal strength based on ADX crossover conditions in a vectorized manner.
 
-        A new signal is generated only when ADX crosses above the 25 threshold:
-            - Long Signal (1): When ADX moves from below 25 to at/above 25 and DI+ exceeds DI–.
-            - Short Signal (-1): When ADX moves from below 25 to at/above 25 and DI– exceeds DI+.
+        A new signal is generated only when ADX crosses above the adx_threshold value:
+            - Long Signal (1): When ADX moves from below adx_threshold to at/above adx_threshold and DI+ exceeds DI–.
+            - Short Signal (-1): When ADX moves from below adx_threshold to at/above adx_threshold and DI– exceeds DI+.
               (Overridden to 0 in long-only mode.)
         Signal strength is defined as:
             signal_strength = (DI+ - DI–) * ADX / 100
@@ -330,7 +333,7 @@ class ADXStrategy(BaseStrategy):
         mdi = df['minus_di']
 
         # Identify when ADX crosses upward through 25.
-        adx_cross = (adx.shift(1) < 25) & (adx >= 25)
+        adx_cross = (adx.shift(1) < self.adx_threshold) & (adx >= self.adx_threshold)
         long_signal = adx_cross & (pdi > mdi)
         short_signal = adx_cross & (mdi > pdi)
 

@@ -44,6 +44,7 @@ class AroonStrategy(BaseStrategy):
             - 'stop_loss_pct'        : Stop loss percentage (default: 0.05).
             - 'take_profit_pct'      : Take profit percentage (default: 0.10).
             - 'slippage_pct'         : Slippage percentage (default: 0.001).
+            - 'trailing_stop_pct'    : Trailing stop percentage (default: 0.0).
             - 'transaction_cost_pct' : Transaction cost percentage (default: 0.001).
             - 'long_only'            : If True, allow only long positions (default: True).
 
@@ -53,10 +54,13 @@ class AroonStrategy(BaseStrategy):
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         super().__init__(db_config, params)
         self.lookback = self.params.get('lookback', 25)
+        self.aroon_up_threshold = self.params.get('aroon_up_threshold', 70)
+        self.aroon_down_threshold = self.params.get('aroon_down_threshold', 30)
         self.long_only = self.params.get('long_only', True)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.0),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )
@@ -92,6 +96,14 @@ class AroonStrategy(BaseStrategy):
         osc_std = aroon_osc.rolling(window=self.lookback, min_periods=self.lookback).std()
         signal_strength = (aroon_osc.abs() / (osc_std + 1e-6)).fillna(0)
 
+        # Apply smoothing if specified
+        signal_smoothing = self.params.get('signal_smoothing', 1)
+        if signal_smoothing > 1:
+            aroon_up = aroon_up.rolling(window=signal_smoothing).mean()
+            aroon_down = aroon_down.rolling(window=signal_smoothing).mean()
+            aroon_osc = aroon_osc.rolling(window=signal_smoothing).mean()
+            signal_strength = signal_strength.rolling(window=signal_smoothing).mean()
+
         return pd.DataFrame({
             'aroon_up': aroon_up,
             'aroon_down': aroon_down,
@@ -104,8 +116,8 @@ class AroonStrategy(BaseStrategy):
         Generate raw trading signals based on computed Aroon indicators.
 
         For each bar:
-          - Generate a long signal (1) if aroon_up >= 70 and aroon_down <= 30.
-          - Generate a short signal (-1) if aroon_up <= 30 and aroon_down >= 70 (only if long_only is False).
+          - Generate a long signal (1) if aroon_up >= aroon_up_threshold and aroon_down <= aroon_down_threshold.
+          - Generate a short signal (-1) if aroon_up <= aroon_down_threshold and aroon_down >= aroon_up_threshold (only if long_only is False).
           - In the absence of a new signal, the previous nonzero signal is forward filled.
 
         Args:
@@ -115,8 +127,8 @@ class AroonStrategy(BaseStrategy):
             pd.Series: Integer signals (1 for long, -1 for short, 0 for flat).
         """
         raw_signals = np.zeros(len(df), dtype=int)
-        long_cond = (df['aroon_up'] >= 70) & (df['aroon_down'] <= 30)
-        short_cond = (df['aroon_up'] <= 30) & (df['aroon_down'] >= 70)
+        long_cond = (df['aroon_up'] >= self.aroon_up_threshold) & (df['aroon_down'] <= self.aroon_down_threshold)
+        short_cond = (df['aroon_up'] <= self.aroon_down_threshold) & (df['aroon_down'] >= self.aroon_up_threshold)
         raw_signals = np.where(long_cond, 1, raw_signals)
         if not self.long_only:
             raw_signals = np.where(short_cond, -1, raw_signals)

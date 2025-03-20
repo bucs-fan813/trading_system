@@ -1,7 +1,5 @@
 # trading_system/src/stategies/trend_following/donchian_channel_strat.py
 
-# TODO: Long only
-
 """
 Donchian Channel Breakout Strategy with Integrated Risk Management
 
@@ -59,6 +57,7 @@ class DonchianChannel(BaseStrategy):
                 - 'atr_threshold': Multiplier to compare the channel width against ATR (default: 1.0).
                 - 'stop_loss_pct': Stop loss percentage for risk management (default: 0.05).
                 - 'take_profit_pct': Take profit percentage for risk management (default: 0.10).
+                - 'trail_stop_pct': Trailing stop percentage for risk management (default: 0.0).
                 - 'slippage_pct': Estimated slippage percentage (default: 0.001).
                 - 'transaction_cost_pct': Transaction cost percentage per trade (default: 0.001).
                 - 'long_only': If True, the strategy will only generate long signals (default: True).
@@ -72,6 +71,7 @@ class DonchianChannel(BaseStrategy):
             'atr_threshold': 1.0,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trail_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -162,6 +162,7 @@ class DonchianChannel(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trail_stop_pct', 0.0),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )

@@ -59,6 +59,7 @@ class IchimokuCloud(BaseStrategy):
             - 'use_price_cross': bool, whether to use price-Kijun cross signals (default: False)
             - 'stop_loss_pct': float, stop loss percentage (default: 0.05)
             - 'take_profit_pct': float, take profit percentage (default: 0.10)
+            - 'trailing_stop_pct': float, trailing stop percentage (default: 0.0)
             - 'slippage_pct': float, estimated slippage as a fraction (default: 0.001)
             - 'transaction_cost_pct': float, transaction cost as a fraction (default: 0.001)
             - 'long_only': bool, whether to allow only long positions (default: True)
@@ -87,6 +88,7 @@ class IchimokuCloud(BaseStrategy):
             'use_price_cross': False,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -265,6 +267,7 @@ class IchimokuCloud(BaseStrategy):
         rm = RiskManager(
             stop_loss_pct=self.params.get("stop_loss_pct", 0.05),
             take_profit_pct=self.params.get("take_profit_pct", 0.10),
+            trailing_stop_pct=self.params.get("trailing_stop_pct", 0.0),
             slippage_pct=self.params.get("slippage_pct", 0.001),
             transaction_cost_pct=self.params.get("transaction_cost_pct", 0.001)
         )
