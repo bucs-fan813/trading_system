@@ -510,3 +510,123 @@ parabolic_sar_strat_search_space = {
     # Strategy behavior
     'long_only': hp.choice('long_only', [True, False])
 }
+
+atr_trailing_stops_strat_search_space = {
+    # ATR calculation parameters
+    'atr_period': hp.quniform('atr_period', 5, 30, 1),  # Shorter for more responsive, longer for more stability
+    'atr_multiplier': hp.uniform('atr_multiplier', 1.5, 5.0),  # Controls stop distance
+    
+    # Trend detection parameters
+    'trend_period': hp.quniform('trend_period', 10, 50, 1),  # SMA period for trend identification
+    
+    # Position control parameters
+    'long_only': hp.choice('long_only', [True, False]),  # True for long-only, False for both long and short
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Fixed stop-loss (adapted for Indian markets)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take-profit levels
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05)  # Trailing stop percentage
+}
+
+bollinger_bands_strat_search_space = {
+    # Bollinger Bands parameters
+    'window': hp.quniform('window', 15, 40, 1),  # SMA and STD calculation period
+    'std_dev': hp.uniform('std_dev', 1.5, 3.0),  # Standard deviation multiplier
+    
+    # Trading mode
+    'long_only': hp.choice('long_only', [True, False]),  # Whether to allow short positions
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop percentage
+}
+
+garch_strat_search_space = {
+    # GARCH model parameters
+    'window_size': hp.quniform('window_size', 50, 200, 5),  # Calibration window
+    'forecast_horizon': hp.choice('forecast_horizon', [1, 2, 3]),  # Days ahead to forecast
+    'p': hp.choice('p', [1, 2]),  # ARCH order
+    'q': hp.choice('q', [1, 2]),  # GARCH order
+    'return_type': hp.choice('return_type', ['log', 'simple']),
+    
+    # Signal generation parameters
+    'vol_threshold': hp.uniform('vol_threshold', 0.05, 0.3),  # Sensitivity to volatility changes
+    
+    # Trading parameters
+    'long_only': hp.choice('long_only', [True, False]),  # Indian markets have uptick rule restrictions
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Lower range due to high volatility in Indian stocks
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15),  # Adjusted for Indian markets
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Optional trailing stop
+}
+
+keltner_channel_strat_search_space = {
+    # Keltner Channel parameters
+    'kc_span': hp.quniform('kc_span', 15, 35, 1),  # EMA period for channel middle
+    'atr_span': hp.quniform('atr_span', 8, 20, 1),  # EMA period for ATR
+    'multiplier': hp.uniform('multiplier', 1.5, 3.5),  # ATR multiplier for channel width
+    
+    # Trading direction
+    'long_only': hp.choice('long_only', [True, False]),  # True for long-only, False for long-short
+    
+    # Risk management parameters
+    'stop_loss': hp.uniform('stop_loss', 0.02, 0.08),  # Stop loss percentage
+    'take_profit': hp.uniform('take_profit', 0.04, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop percentage
+}
+
+supertrend_strat_search_space = {
+    # Supertrend indicator parameters
+    'lookback': hp.quniform('lookback', 7, 21, 1),  # ATR period (7-21 days)
+    'multiplier': hp.uniform('multiplier', 1.5, 4.5),  # ATR multiplier (1.5-4.5)
+    'long_only': hp.choice('long_only', [True, False]),  # Long-only or long-short
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.07),  # Stop-loss (2-7%)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take-profit (4-15%)
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop (0-5%)
+    
+    # Market friction parameters - adapted for Indian markets
+    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0005), np.log(0.002)),  # 0.05-0.2%
+    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # 0.05-0.3%
+}
+
+volatality_squeeze_strat_search_space = {
+    # Bollinger Bands parameters
+    'bb_period': hp.quniform('bb_period', 15, 40, 1),
+    'bb_std': hp.uniform('bb_std', 1.5, 3.0),
+    
+    # Keltner Channel parameters
+    'kc_period': hp.quniform('kc_period', 15, 40, 1),
+    'kc_atr_period': hp.quniform('kc_atr_period', 10, 30, 1),
+    'kc_multiplier': hp.uniform('kc_multiplier', 1.2, 2.5),
+    
+    # Momentum parameters
+    'momentum_period': hp.quniform('momentum_period', 8, 20, 1),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),
+
+    # Strategy options
+    'long_only': hp.choice('long_only', [True, False])
+}
+
+volatality_breakout_strat_search_space = {
+    # Volatility calculation parameters
+    'lookback_period': hp.quniform('lookback_period', 10, 50, 1),
+    'volatility_multiplier': hp.uniform('volatility_multiplier', 1.0, 3.0),
+    'use_atr': hp.choice('use_atr', [True, False]),
+    'atr_period': hp.quniform('atr_period', 7, 21, 1),
+    
+    # Trading constraints
+    'long_only': hp.choice('long_only', [True, False]),
+    
+    # Risk management parameters
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05)
+}

@@ -68,6 +68,7 @@ class ATRTrailingStops(BaseStrategy):
         - trend_period (int): Period for computing SMA for trend detection (default: 20).
         - stop_loss_pct (float): Stop-loss percentage for risk management (default: 0.05).
         - take_profit_pct (float): Take-profit percentage for risk management (default: 0.10).
+        - trailing_stop_pct (float): Trailing stop percentage for risk management (default: 0.0).
         - slippage_pct (float): Slippage percentage for risk management (default: 0.001).
         - transaction_cost_pct (float): Transaction cost percentage for risk management (default: 0.001).
         - long_only (bool): If True, restricts trading to long positions only (default: True).
@@ -100,6 +101,7 @@ class ATRTrailingStops(BaseStrategy):
             'trend_period': 20,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True

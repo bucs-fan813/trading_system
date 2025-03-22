@@ -4,88 +4,56 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, Optional, Tuple, Union, List
+
 from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
 
+
 class SupertrendStrategy(BaseStrategy):
     """
     Supertrend Strategy with Integrated Risk Management.
-
-    This strategy computes the Supertrend indicator which is used to generate trading signals.
-    The indicator is computed as follows:
-
-      1. True Range (TR) is calculated as:
-            TR = max( High - Low, |High - Previous Close|, |Low - Previous Close| )
-
-      2. The Average True Range (ATR) is computed using an exponential moving average over a specified lookback period:
-            ATR = EMA(TR, span=lookback)
-
-      3. Basic Bands are derived from:
-            Basic Upper Band = (High + Low) / 2 + (multiplier × ATR)
-            Basic Lower Band = (High + Low) / 2 - (multiplier × ATR)
-
-      4. Final Bands are obtained recursively:
-            Final Upper Band[0] = Basic Upper Band[0]
-            For i > 0:
-                if Basic Upper Band[i] < Final Upper Band[i-1] or Close[i-1] > Final Upper Band[i-1]:
-                    Final Upper Band[i] = Basic Upper Band[i]
-                else:
-                    Final Upper Band[i] = Final Upper Band[i-1]
-            Final Lower Band[0] = Basic Lower Band[0]
-            For i > 0:
-                if Basic Lower Band[i] > Final Lower Band[i-1] or Close[i-1] < Final Lower Band[i-1]:
-                    Final Lower Band[i] = Basic Lower Band[i]
-                else:
-                    Final Lower Band[i] = Final Lower Band[i-1]
-
-      5. Supertrend and Trend determination:
-         Initialize:
-             if Close[0] <= Final Upper Band[0]:
-                 then Supertrend[0] = Final Upper Band[0] and trend = -1 (bearish)
-             else:
-                 Supertrend[0] = Final Lower Band[0] and trend = +1 (bullish)
-         For i > 0:
-             If previous trend is bearish (-1):
-                 if Close[i] <= Final Upper Band[i]:
-                     then trend remains -1 and Supertrend[i] = Final Upper Band[i]
-                 else:
-                     trend switches to +1 and Supertrend[i] = Final Lower Band[i]
-             If previous trend is bullish (+1):
-                 if Close[i] >= Final Lower Band[i]:
-                     then trend remains +1 and Supertrend[i] = Final Lower Band[i]
-                 else:
-                     trend switches to -1 and Supertrend[i] = Final Upper Band[i]
-
-      6. Trading Signals:
-         - A buy signal (+1) is generated when the price crosses from below to above the Supertrend.
-         - A sell signal (-1) is generated when the price crosses from above to below the Supertrend.
-         - Signal strength is computed as:
-                signal_strength = (|Close - Supertrend| / Close) * signal
-           In “long only” mode (if enabled) negative signals are clipped to 0.
-
-      7. Risk Management is applied using the RiskManager component. It adjusts the entry price taking into account
-         slippage and transaction cost, and then applies stop-loss and take-profit rules. The realized return and cumulative
-         return are computed across the whole dataset so that downstream performance metrics (e.g. Sharpe ratio, max drawdown)
-         can be easily calculated.
-
+    
+    This strategy computes the Supertrend indicator to generate trading signals.
+    The Supertrend is built upon the Average True Range (ATR) by calculating
+    basic upper and lower bands and then recursively adjusting these to form
+    final bands. Based on the final bands, a Supertrend level is determined along
+    with a trend direction indicator (-1 for bearish and +1 for bullish). Trading
+    signals are generated on the crossovers of the price with the Supertrend. The
+    signal strength is computed as the normalized distance between the close and
+    Supertrend level. In “long only” mode negative signals are set to 0.
+    
+    Risk Management is applied via the RiskManager, which adjusts trades for
+    slippage, transaction cost, stop loss, take profit, and trailing stop percent.
+    These adjustments lead to realized trade returns and cumulative returns,
+    making it easy to compute performance metrics downstream (e.g., Sharpe ratio,
+    max drawdown).
+    
     Strategy Inputs and Hyperparameters:
-      - ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
+      - ticker (str or List[str]): Stock ticker symbol(s).
       - start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
       - end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-      - initial_position (int): The starting position (0, 1, or -1).
-      - latest_only (bool): If True, returns only the final row per ticker (useful for forecasting).
-      - params (dict, optional): Strategy-specific parameters with defaults:
-            • 'lookback'   : ATR lookback period (default: 10)
-            • 'multiplier' : ATR multiplier for bands (default: 3.0)
-            • 'long_only'  : If True, only long positions are allowed (default: True)
-
+      - initial_position (int): Starting trading position (0, 1, or -1).
+      - latest_only (bool): If True, returns only the final signal row per ticker.
+      - params (dict, optional): Dictionary with strategy-specific parameters.
+          • 'lookback'            : ATR lookback period (default: 10)
+          • 'multiplier'          : ATR multiplier for bands (default: 3.0)
+          • 'long_only'           : If True, only long signals are allowed (default: True)
+          • 'stop_loss_pct'       : Stop loss percentage (default: 0.05)
+          • 'take_profit_pct'     : Take profit percentage (default: 0.10)
+          • 'trailing_stop_pct'   : Trailing stop percent (default: 0.0, i.e. disabled)
+          • 'slippage_pct'        : Slippage percentage (default: 0.001)
+          • 'transaction_cost_pct': Transaction cost percentage (default: 0.001)
+    
     Outputs:
       A DataFrame containing:
-        - OHLC price data (open, high, low, close).
-        - Computed Supertrend indicator and trend.
-        - Raw trading signals and signal strength.
-        - Risk-managed trading position, realized trade return, cumulative return, and exit event annotations.
+        - OHLC prices: 'open', 'high', 'low', 'close'.
+        - Computed indicator: 'supertrend' and trend direction ('trend').
+        - Raw trading signals and normalized signal strength ('signal', 'signal_strength').
+        - Risk-managed outputs: 'position', 'return', 'cumulative_return', and 'exit_type'.
+    
+    The strategy supports both full backtesting (using a clear start_date and end_date)
+    and latest signal forecasting (by setting latest_only=True).
     """
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         default_params = {'lookback': 10, 'multiplier': 3.0, 'long_only': True}
@@ -93,8 +61,16 @@ class SupertrendStrategy(BaseStrategy):
             default_params.update(params)
         super().__init__(db_config, default_params)
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.risk_manager = RiskManager()  # Initialize with default risk parameters
         self.long_only = bool(self.params.get('long_only', True))
+        # Initialize RiskManager with risk-related parameters from params (if provided)
+        rm_params = {
+            "stop_loss_pct": self.params.get("stop_loss_pct", 0.05),
+            "take_profit_pct": self.params.get("take_profit_pct", 0.10),
+            "trailing_stop_pct": self.params.get("trailing_stop_pct", 0.0),
+            "slippage_pct": self.params.get("slippage_pct", 0.001),
+            "transaction_cost_pct": self.params.get("transaction_cost_pct", 0.001)
+        }
+        self.risk_manager = RiskManager(**rm_params)
 
     def generate_signals(
         self,
@@ -105,34 +81,37 @@ class SupertrendStrategy(BaseStrategy):
         latest_only: bool = False
     ) -> pd.DataFrame:
         """
-        Generate Supertrend trading signals and apply risk management adjustments.
-
-        Retrieves the historical price data in a vectorized manner (supporting multiple tickers),
-        computes the Supertrend indicator and corresponding trend, generates raw signals based on
-        price crossovers of the Supertrend line, and finally applies risk management (stop-loss,
-        take-profit, slippage, transaction cost) via the RiskManager.
-
+        Generate Supertrend trading signals with risk management adjustments.
+        
+        Retrieves historical OHLC data from the database, computes all components of
+        the Supertrend indicator (including ATR, basic bands, final bands, Supertrend
+        level, and trend direction), and generates raw signals based on crossovers.
+        Then, risk management rules are applied via the RiskManager to adjust entry
+        prices (accounting for slippage and transaction costs) and to compute stop-loss,
+        take-profit thresholds, as well as realized and cumulative returns.
+        
         Args:
-            ticker (str or List[str]): Stock ticker symbol or a list of ticker symbols.
-            start_date (str, optional): Backtesting start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): Backtesting end date in 'YYYY-MM-DD' format.
-            initial_position (int): The initial trading position.
-            latest_only (bool): If True, only the most recent signal row is returned (per ticker for multi-ticker).
-
+            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
+            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
+            initial_position (int): Initial trading position (default 0).
+            latest_only (bool): If True, returns only the final signal row per ticker.
+        
         Returns:
-            pd.DataFrame: DataFrame with OHLC prices, computed indicators, raw signals, risk-managed positions,
+            pd.DataFrame: DataFrame containing OHLC prices, computed Supertrend indicator,
+                          raw signals with normalized strength, risk-managed positions,
                           trade returns, cumulative returns, and exit event annotations.
         """
-        # Retrieve historical OHLC data with sufficient lookback for stable indicator estimation.
+        # Retrieve historical OHLC data with a sufficient lookback period for indicator stability.
         data = self._get_price_data(ticker, start_date, end_date, latest_only)
         if data.empty:
             self.logger.warning("No historical data found.")
             return pd.DataFrame()
 
-        # If multiple tickers are provided, process each ticker (grouped) separately.
+        # Process the data per ticker.
         if isinstance(ticker, list):
             groups = []
-            # Multi-index DataFrame: group by the first index level (ticker)
+            # The data is assumed to be a multi-index DataFrame (ticker, date)
             for t, group in data.groupby(level=0):
                 group = group.reset_index(level=0, drop=True).sort_index()
                 group = self._calculate_supertrend(group)
@@ -144,7 +123,6 @@ class SupertrendStrategy(BaseStrategy):
             if latest_only:
                 signals = signals.groupby('ticker', group_keys=False).tail(1)
         else:
-            # Process single ticker data.
             data = data.sort_index()
             data = self._calculate_supertrend(data)
             signals = self._generate_trading_signals(data)
@@ -161,22 +139,23 @@ class SupertrendStrategy(BaseStrategy):
         latest_only: bool
     ) -> pd.DataFrame:
         """
-        Retrieve historical OHLC price data from the database with a sufficient lookback.
-
-        The number of records retrieved is at least max(lookback*3, 252) if latest_only is True;
-        otherwise, all data within the specified date range is returned.
-
+        Retrieve historical OHLC price data from the database.
+        
+        If latest_only is True, it ensures the retrieval of at least
+        max(lookback*3, 252) records for a stable indicator calculation.
+        Otherwise, all available data within the date range is returned.
+        
         Args:
-            ticker (str or List[str]): Stock ticker symbol or list of tickers.
+            ticker (str or List[str]): Stock ticker symbol(s).
             start_date (str or None): Start date in 'YYYY-MM-DD' format.
             end_date (str or None): End date in 'YYYY-MM-DD' format.
-            latest_only (bool): Flag to indicate if only minimal data is needed for the latest signal.
-
+            latest_only (bool): If True, limits the data to a minimal lookback.
+        
         Returns:
-            pd.DataFrame: DataFrame containing historical OHLC data (and ticker column for multi-ticker).
+            pd.DataFrame: DataFrame containing historical OHLC data (and 'ticker' column for multi-ticker).
         """
         lookback = self.params['lookback']
-        min_records = max(lookback * 3, 252)  # Minimum records necessary for indicator stability
+        min_records = max(lookback * 3, 252)  # Minimum records for indicator stability.
         try:
             return self.get_historical_prices(
                 tickers=ticker,
@@ -190,59 +169,55 @@ class SupertrendStrategy(BaseStrategy):
 
     def _calculate_supertrend(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate the Supertrend indicator components and determine the trend.
-
-        This method computes the True Range (TR), Average True Range (ATR), basic bands, and then
-        recursively calculates the final upper and lower bands. Based on these, the Supertrend
-        and trend direction are determined.
-
+        Compute the Supertrend indicator components including ATR, basic bands,
+        final bands, and finally determine the Supertrend and trend direction.
+        
         Args:
             data (pd.DataFrame): DataFrame with columns 'high', 'low', and 'close'.
-
+        
         Returns:
-            pd.DataFrame: Enriched DataFrame with columns for ATR, basic bands, final bands,
-                          supertrend, and trend.
+            pd.DataFrame: Input DataFrame enriched with columns:
+                          'tr', 'atr', 'basic_upper', 'basic_lower',
+                          'final_upper', 'final_lower', 'supertrend', and 'trend'.
         """
         lookback = self.params['lookback']
         multiplier = self.params['multiplier']
 
-        # Calculate True Range (TR) and Average True Range (ATR)
+        # Calculate True Range (TR) and then the Average True Range (ATR)
         hl = data['high'] - data['low']
         hc = (data['high'] - data['close'].shift(1)).abs()
         lc = (data['low'] - data['close'].shift(1)).abs()
         data['tr'] = pd.concat([hl, hc, lc], axis=1).max(axis=1)
         data['atr'] = data['tr'].ewm(span=lookback, adjust=False).mean()
 
-        # Compute the Basic Upper and Lower Bands
+        # Compute the Basic Upper and Lower Bands.
         hl2 = (data['high'] + data['low']) / 2
         data['basic_upper'] = hl2 + multiplier * data['atr']
         data['basic_lower'] = hl2 - multiplier * data['atr']
 
-        # Compute Final Upper and Lower Bands with recursive adjustments.
+        # Compute Final Upper and Lower Bands recursively.
         data['final_upper'] = self._calculate_final_upper(data)
         data['final_lower'] = self._calculate_final_lower(data)
 
-        # Compute the Supertrend line and Trend direction.
+        # Compute the Supertrend level and trend based on final bands.
         data['supertrend'], data['trend'] = self._calculate_supertrend_trend(data)
-
         return data
 
     def _calculate_final_upper(self, data: pd.DataFrame) -> pd.Series:
         """
-        Compute the Final Upper Band for the Supertrend indicator.
-
-        For each bar:
-          - For the first period, Final Upper Band = Basic Upper Band.
-          - For subsequent periods, if the current Basic Upper Band is lower than
-            the previous Final Upper Band or if the previous close is greater than
-            the previous Final Upper Band, then take the current Basic Upper Band;
-            otherwise, carry forward the previous Final Upper Band.
-
+        Recursively compute the Final Upper Band.
+        
+        For the first period, it is equal to the Basic Upper Band.
+        For subsequent periods, if the current Basic Upper Band is lower than the
+        previous Final Upper Band or if the previous close is greater than the previous
+        Final Upper Band, then the current Basic Upper Band is used; otherwise,
+        the previous Final Upper Band is carried forward.
+        
         Args:
-            data (pd.DataFrame): DataFrame containing 'basic_upper' and 'close'.
-
+            data (pd.DataFrame): DataFrame with columns 'basic_upper' and 'close'.
+        
         Returns:
-            pd.Series: Series of the recursively computed Final Upper Band.
+            pd.Series: Series representing the Final Upper Band.
         """
         final_upper = data['basic_upper'].copy()
         for i in range(1, len(final_upper)):
@@ -254,20 +229,19 @@ class SupertrendStrategy(BaseStrategy):
 
     def _calculate_final_lower(self, data: pd.DataFrame) -> pd.Series:
         """
-        Compute the Final Lower Band for the Supertrend indicator.
-
-        For each bar:
-          - For the first period, Final Lower Band = Basic Lower Band.
-          - For subsequent periods, if the current Basic Lower Band is higher than
-            the previous Final Lower Band or if the previous close is lower than
-            the previous Final Lower Band, then take the current Basic Lower Band;
-            otherwise, carry forward the previous Final Lower Band.
-
+        Recursively compute the Final Lower Band.
+        
+        For the first period, it is equal to the Basic Lower Band.
+        For subsequent periods, if the current Basic Lower Band is higher than the
+        previous Final Lower Band or if the previous close is lower than the previous
+        Final Lower Band, then the current Basic Lower Band is used; otherwise,
+        the previous Final Lower Band is carried forward.
+        
         Args:
-            data (pd.DataFrame): DataFrame containing 'basic_lower' and 'close'.
-
+            data (pd.DataFrame): DataFrame with columns 'basic_lower' and 'close'.
+        
         Returns:
-            pd.Series: Series of the recursively computed Final Lower Band.
+            pd.Series: Series representing the Final Lower Band.
         """
         final_lower = data['basic_lower'].copy()
         for i in range(1, len(final_lower)):
@@ -279,29 +253,25 @@ class SupertrendStrategy(BaseStrategy):
 
     def _calculate_supertrend_trend(self, data: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
         """
-        Determine the Supertrend level and the trend direction.
-
-        Initialization:
-            - If the first close is less than or equal to Final Upper Band,
-              then set Supertrend[0] = Final Upper Band[0] and trend = -1 (bearish);
-              otherwise, set Supertrend[0] = Final Lower Band[0] and trend = +1 (bullish).
-        For subsequent periods:
-            - If the previous trend is bearish (-1):
-                • Remains bearish if current close is below or equal to Final Upper Band,
-                  setting Supertrend to Final Upper Band.
-                • Otherwise, switches to bullish (+1) and Supertrend is set to Final Lower Band.
-            - If the previous trend is bullish (+1):
-                • Remains bullish if current close is above or equal to Final Lower Band,
-                  setting Supertrend to Final Lower Band.
-                • Otherwise, switches to bearish (-1) and Supertrend is set to Final Upper Band.
-
+        Determine the Supertrend level and trend direction based on the final bands.
+        
+        For the first period:
+          - If the first close is less than or equal to the Final Upper Band, then
+            the Supertrend is set to the Final Upper Band, and the trend is bearish (-1).
+          - Otherwise, the Supertrend is set to the Final Lower Band, and the trend is bullish (+1).
+        For subsequent periods, based on the previous trend:
+          - If the previous trend is bearish (-1) and the current close is less than or equal
+            to the Final Upper Band, the trend remains bearish; otherwise, it switches to bullish.
+          - If the previous trend is bullish (+1) and the current close is greater than or equal
+            to the Final Lower Band, the trend remains bullish; otherwise, it switches to bearish.
+        
         Args:
-            data (pd.DataFrame): DataFrame containing 'final_upper', 'final_lower', and 'close'.
-
+            data (pd.DataFrame): DataFrame with columns 'final_upper', 'final_lower', and 'close'.
+        
         Returns:
             Tuple[pd.Series, pd.Series]:
-                - Series for the computed Supertrend.
-                - Series for the trend direction (-1 for bearish, +1 for bullish).
+                - Series of the computed Supertrend values.
+                - Series of the trend direction (-1 for bearish, +1 for bullish).
         """
         supertrend = np.zeros(len(data))
         trend = np.zeros(len(data))
@@ -331,44 +301,49 @@ class SupertrendStrategy(BaseStrategy):
 
     def _generate_trading_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate raw trading signals based on the Supertrend indicator crossovers.
-
-        A buy signal (+1) is generated when the price crosses above the Supertrend from below,
-        and a sell signal (-1) is generated when the price crosses below from above. The signal
-        strength is computed as the normalized distance between the close and Supertrend line,
-        multiplied by the signal value. If 'long_only' is enabled, negative signals (short entries)
-        are converted to 0.
-
+        Generate raw trading signals based on Supertrend crossovers.
+        
+        A buy signal (+1) is generated when the price crosses above the Supertrend from below.
+        A sell signal (-1) is generated when the price crosses below the Supertrend from above.
+        The signal strength is calculated as:
+            signal_strength = (|close - supertrend| / close) * signal.
+        In “long only” mode negative signals are clipped and the signal strength is re‐calculated.
+        
         Args:
-            data (pd.DataFrame): DataFrame containing 'open', 'high', 'low', 'close', and 'supertrend'.
-
+            data (pd.DataFrame): DataFrame containing OHLC data and the computed 'supertrend'.
+        
         Returns:
-            pd.DataFrame: DataFrame with columns: 'open', 'high', 'low', 'close', 'supertrend',
-                          'signal' and 'signal_strength'.
+            pd.DataFrame: DataFrame with columns: 'open', 'high', 'low', 'close',
+                          'supertrend', 'signal', and 'signal_strength'.
         """
+        # Define crossover conditions.
         cross_above = (data['close'].shift(1) < data['supertrend'].shift(1)) & (data['close'] > data['supertrend'])
         cross_below = (data['close'].shift(1) > data['supertrend'].shift(1)) & (data['close'] < data['supertrend'])
         data['signal'] = np.select([cross_above, cross_below], [1, -1], default=0)
+        # Calculate signal strength based on the normalized distance.
         data['signal_strength'] = ((data['close'] - data['supertrend']).abs() / data['close']) * data['signal']
+        # In long only mode, clip negative signals and re-calculate signal strength.
         if self.long_only:
             data['signal'] = data['signal'].clip(lower=0)
+            data['signal_strength'] = ((data['close'] - data['supertrend']).abs() / data['close']) * data['signal']
         return data[['open', 'high', 'low', 'close', 'supertrend', 'signal', 'signal_strength']]
 
     def _apply_risk_management(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
         """
-        Apply risk management rules to raw signals.
-
-        Uses the RiskManager component to adjust for slippage, transaction cost, and applies
-        stop-loss and take-profit rules. Additionally, this function computes realized trade returns
-        and cumulative returns.
-
+        Apply risk management rules on raw signals to compute trade positions,
+        realized returns, and cumulative returns.
+        
+        The RiskManager adjusts the entry price (by incorporating slippage and transaction costs)
+        and then sets stop-loss, take-profit, and trailing stop exits. It computes the realized
+        trade return for each exit event and updates the trading position accordingly.
+        
         Args:
-            signals (pd.DataFrame): DataFrame with raw trading signals and associated price data.
-            initial_position (int): Starting trading position.
-
+            signals (pd.DataFrame): DataFrame containing raw trading signals and OHLC data.
+            initial_position (int): Starting trading position (0, 1, or -1).
+        
         Returns:
-            pd.DataFrame: DataFrame with additional columns including 'position', 'return',
-                          'cumulative_return', and 'exit_type'.
+            pd.DataFrame: DataFrame containing risk-managed outputs along with original OHLC,
+                          signals, and risk management annotations (position, return, cumulative_return, exit_type).
         """
         if not signals.empty:
             return self.risk_manager.apply(signals, initial_position=initial_position)

@@ -1,7 +1,5 @@
 # trading_system/src/strategies/volatality/volatility_squeeze.py
 
-# TODO: Long Only
-
 import pandas as pd
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -65,6 +63,7 @@ class VolatilitySqueeze(BaseStrategy):
             - 'momentum_period'      : Lookback period for momentum slope calculation (default = 12).
             - 'stop_loss_pct'        : Stop loss threshold (default = 0.05).
             - 'take_profit_pct'      : Take profit threshold (default = 0.10).
+            - 'trailing_stop_pct'    : Trailing stop percentage (default = 0.00).
             - 'slippage_pct'         : Slippage percentage (default = 0.001).
             - 'transaction_cost_pct' : Transaction cost percentage (default = 0.001).
             - 'long_only'            : If True, generate long-only signals (default = True).
@@ -96,6 +95,7 @@ class VolatilitySqueeze(BaseStrategy):
             'momentum_period': 12,
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.00,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
             'long_only': True
@@ -217,6 +217,7 @@ class VolatilitySqueeze(BaseStrategy):
             risk_manager = RiskManager(
                 stop_loss_pct=self.params['stop_loss_pct'],
                 take_profit_pct=self.params['take_profit_pct'],
+                trailing_stop_pct=self.params['trailing_stop_pct'],
                 slippage_pct=self.params['slippage_pct'],
                 transaction_cost_pct=self.params['transaction_cost_pct']
             )

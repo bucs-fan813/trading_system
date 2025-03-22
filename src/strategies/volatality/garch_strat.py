@@ -65,6 +65,7 @@ class GARCHModel(BaseStrategy):
             - 'return_type' (str): 'log' or 'simple' returns (default: 'log').
             - 'stop_loss_pct' (float): Stop loss percentage (default: 0.05).
             - 'take_profit_pct' (float): Take profit percentage (default: 0.10).
+            - 'trailing_stop_pct' (float): Trailing stop percentage (default: 0.00).
             - 'slippage_pct' (float): Slippage percentage (default: 0.001).
             - 'transaction_cost_pct' (float): Transaction cost percentage (default: 0.001).
             - 'long_only' (bool): If True, restricts trading to long positions only (default: True).
@@ -101,6 +102,7 @@ class GARCHModel(BaseStrategy):
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'slippage_pct': 0.001,
+            'trailing_stop_pct': 0.00,
             'transaction_cost_pct': 0.001,
             'long_only': True
         }
@@ -270,6 +272,7 @@ class GARCHModel(BaseStrategy):
         risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
             take_profit_pct=self.params.get('take_profit_pct', 0.10),
+            trailing_stop_pct=self.params.get('trailing_stop_pct', 0.00),
             slippage_pct=self.params.get('slippage_pct', 0.001),
             transaction_cost_pct=self.params.get('transaction_cost_pct', 0.001)
         )

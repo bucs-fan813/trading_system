@@ -49,6 +49,7 @@ class KeltnerChannelStrategy(BaseStrategy):
             - long_only (bool): If True, only long positions are allowed (default: True).
             - stop_loss (float): Stop loss percentage (default: 0.05).
             - take_profit (float): Take profit percentage (default: 0.10).
+            - trailing_stop_pct (float): Trailing stop percentage (default: 0.0).
             - slippage (float): Slippage percentage (default: 0.001).
             - transaction_cost (float): Transaction cost percentage (default: 0.001).
     """
@@ -73,6 +74,7 @@ class KeltnerChannelStrategy(BaseStrategy):
         self.params.setdefault('stop_loss', 0.05)
         self.params.setdefault('take_profit', 0.10)
         self.params.setdefault('slippage', 0.001)
+        self.params.setdefault('trailing_stop_pct', 0.0)
         self.params.setdefault('transaction_cost', 0.001)
         self.params.setdefault('long_only', True)
 
@@ -93,6 +95,7 @@ class KeltnerChannelStrategy(BaseStrategy):
         return RiskManager(
             stop_loss_pct=self.params['stop_loss'],
             take_profit_pct=self.params['take_profit'],
+            trailing_stop_pct=self.params['trailing_stop_pct'],
             slippage_pct=self.params['slippage'],
             transaction_cost_pct=self.params['transaction_cost']
         )
