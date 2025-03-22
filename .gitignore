@@ -10,3 +10,6 @@ test_trading_system.db
 src/data/trading_system.db
 src/data/trading_system.db-journal
 data/
+mlruns/
+cache_dir/
+hyperopt_cache/
