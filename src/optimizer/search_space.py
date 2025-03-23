@@ -262,9 +262,9 @@ awesome_oscillator_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),     # Allow only long positions or both long/short
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),         # Stop loss percentage (smaller for Indian markets due to volatility)
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.15),      # Take profit percentage
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),   # Trailing stop percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.1),         # Stop loss percentage (smaller for Indian markets due to volatility)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.15),      # Take profit percentage
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.1),   # Trailing stop percentage
 }
 
 coppock_curve_strat_search_space = {
