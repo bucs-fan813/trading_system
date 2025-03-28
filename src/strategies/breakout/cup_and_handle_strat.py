@@ -3,414 +3,572 @@
 import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
-from typing import Dict, Optional, List, Tuple, Union
-from src.strategies.base_strat import BaseStrategy
+from typing import Dict, Optional, List, Tuple, Union, Any
+import logging
+
+from src.strategies.base_strat import BaseStrategy, DataRetrievalError # Import BaseStrategy and potential error
 from src.database.config import DatabaseConfig
-from src.strategies.risk_management import RiskManager
+from src.strategies.risk_management import RiskManager # Assuming RiskManager is in this path
 
 class CupAndHandle(BaseStrategy):
     """
-    Cup and Handle Breakout Strategy with Integrated Risk Management
+    Cup and Handle Breakout Strategy with Integrated Risk Management.
 
-    This strategy identifies a "cup" formation followed by a "handle" formation in the price action.
-    Mathematically, define the price series P(t) and let:
-    
-        • t₁ = time of left peak (P₁ = price at t₁)
-        • t₂ = time of right peak (P₂ = price at t₂)
-        • P_bottom = minimum price observed between t₁ and t₂
-    
-    Then the resistance level is:
-    
-        resistance = max(P₁, P₂)
-    
-    and the cup depth is:
-    
-        D = resistance - P_bottom,
-    
-    so that the relative cup depth is D / resistance. For a valid cup, the relative cup depth must not 
-    exceed a specified threshold (e.g. 0.3). Following the cup, a handle formation is expected—a minor 
-    dip that does not retrace the full cup depth (e.g. no deeper than 50% of D). A breakout (and hence a 
-    buy signal) is triggered once the price exceeds the resistance by a small breakout threshold (e.g. 0.005).
-    
-    The signal strength is computed as:
-    
-        signal_strength = (close / resistance) - 1,
-    
-    meaning that a higher signal strength indicates a stronger breakout above resistance.
-    
-    Risk management is then applied via the RiskManager which accounts for stop loss, take profit, slippage,
-    and transaction costs to compute realized trade returns and cumulative returns. The strategy also 
-    supports backtesting over a user-specified date range as well as quick generation for only the latest signal.
-    
+    This strategy identifies a bullish continuation pattern consisting of a "cup"
+    followed by a "handle".
+
+    Mathematical Definition:
+    1. Cup Formation:
+        - Identify two local price peaks (using high prices), P_left at t_left and
+          P_right at t_right, within a duration [min_cup_duration, max_cup_duration].
+        - Resistance R = max(P_left, P_right).
+        - Find the lowest price (low) P_bottom between t_left and t_right.
+        - Cup Depth D = R - P_bottom.
+        - Validation:
+            - Duration constraints met.
+            - Peaks P_left and P_right are relatively close (e.g., within 10-15% of R).
+            - Relative Depth (D / R) <= cup_depth_threshold (cup isn't too deep).
+            - Bottom occurs roughly in the middle third of the cup duration.
+
+    2. Handle Formation:
+        - After t_right, look for a consolidation period within duration
+          [min_handle_duration, max_handle_duration].
+        - Characterized by a minor pullback. Let the low be P_handle_bottom.
+        - Handle Depth D_handle = P_right - P_handle_bottom.
+        - Validation:
+            - Duration constraints met.
+            - Relative Depth: D_handle <= D * handle_depth_threshold (handle is shallow).
+            - Handle low P_handle_bottom should remain above the cup's midpoint.
+
+    3. Breakout Signal (Long Only):
+        - Triggered when close price breaks above the resistance R by a threshold.
+        - Condition: close > R * (1 + breakout_threshold).
+        - Optional Volume Confirmation: volume > average_volume on breakout.
+        - Signal = 1 (Buy).
+
+    4. Signal Strength:
+        - Measures the intensity of the breakout.
+        - Formula: signal_strength = (close / R) - 1, for breakout signals.
+
+    Risk Management:
+    - Uses the RiskManager class to apply stop-loss, take-profit, trailing stops,
+      slippage, and transaction costs.
+    - Calculates risk-adjusted positions and returns.
+
     Strategy Parameters (defaults):
-        - min_cup_duration (int): Minimum bars required for a valid cup (default: 30).
-        - max_cup_duration (int): Maximum bars allowed for a cup (default: 150).
-        - min_handle_duration (int): Minimum bars for a valid handle (default: 5).
-        - max_handle_duration (int): Maximum bars allowed for a handle (default: 30).
-        - cup_depth_threshold (float): Maximum allowable cup depth (fraction, default: 0.3).
-        - handle_depth_threshold (float): Maximum allowable handle depth relative to cup depth (default: 0.5).
-        - breakout_threshold (float): Percentage above resistance to trigger breakout (default: 0.005).
-        - volume_confirm (bool): Require volume confirmation for breakout (default: True).
+        - min_cup_duration (int): Min bars for cup (default: 30).
+        - max_cup_duration (int): Max bars for cup (default: 150).
+        - min_handle_duration (int): Min bars for handle (default: 5).
+        - max_handle_duration (int): Max bars for handle (default: 30).
+        - cup_depth_threshold (float): Max relative cup depth (default: 0.3).
+        - handle_depth_threshold (float): Max handle depth relative to cup depth (default: 0.5).
+        - peak_similarity_threshold (float): Max relative difference between cup peaks (default: 0.15).
+        - breakout_threshold (float): Percentage above resistance for breakout (default: 0.005).
+        - volume_confirm (bool): Require volume confirmation (default: True).
+        - extrema_order (int): Order for scipy.signal.argrelextrema (default: 5).
         - stop_loss_pct (float): Stop loss percentage (default: 0.05).
         - take_profit_pct (float): Take profit percentage (default: 0.10).
         - trailing_stop_pct (float): Trailing stop percentage (default: 0.0).
-        - slippage_pct (float): Estimated slippage percentage (default: 0.001).
-        - transaction_cost_pct (float): Estimated transaction cost percentage (default: 0.001).
-        - long_only (bool): If True, only long positions are allowed (default: True).
+        - slippage_pct (float): Slippage estimate (default: 0.001).
+        - transaction_cost_pct (float): Transaction cost estimate (default: 0.001).
     """
-    
-    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
+
+    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict[str, Any]] = None):
         """
-        Initialize the Cup and Handle strategy with specific parameters.
+        Initialize the Cup and Handle strategy.
 
         Args:
-            db_config (DatabaseConfig): Database configuration for retrieving price data.
-            params (Dict, optional): Strategy-specific parameters. If not provided,
-                                     default parameters are used.
+            db_config (DatabaseConfig): Database configuration object.
+            params (Dict[str, Any], optional): Strategy parameters overriding defaults.
         """
         default_params = {
             'min_cup_duration': 30,
             'max_cup_duration': 150,
             'min_handle_duration': 5,
             'max_handle_duration': 30,
-            'cup_depth_threshold': 0.3,         # Cup depth must be less than 30% of resistance
-            'handle_depth_threshold': 0.5,      # Handle depth must be less than 50% of cup depth
-            'breakout_threshold': 0.005,        # Breakout occurs when price exceeds resistance by 0.5%
+            'cup_depth_threshold': 0.3,         # Max relative depth D/R
+            'handle_depth_threshold': 0.5,      # Max relative depth D_handle/D
+            'peak_similarity_threshold': 0.15,  # Max |P_left - P_right| / R
+            'breakout_threshold': 0.005,        # Breakout trigger: close > R * (1 + threshold)
             'volume_confirm': True,
+            'extrema_order': 5,                 # Order for local extrema detection
             'stop_loss_pct': 0.05,
             'take_profit_pct': 0.10,
             'trailing_stop_pct': 0.0,
             'slippage_pct': 0.001,
             'transaction_cost_pct': 0.001,
-            'long_only': True                   # This is a long only strategy by design and would work the same irrespecyive of the parameter
         }
         if params:
             default_params.update(params)
+
         super().__init__(db_config, default_params)
-    
-    def generate_signals(self, ticker: Union[str, List[str]],
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.risk_manager = RiskManager(
+            stop_loss_pct=self.params['stop_loss_pct'],
+            take_profit_pct=self.params['take_profit_pct'],
+            trailing_stop_pct=self.params['trailing_stop_pct'],
+            slippage_pct=self.params['slippage_pct'],
+            transaction_cost_pct=self.params['transaction_cost_pct']
+        )
+
+    def generate_signals(self,
+                         ticker: Union[str, List[str]], # <<< CHANGED BACK TO 'ticker' (singular)
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
-        Generate trading signals based on cup and handle breakout patterns and apply risk management.
+        Generates Cup and Handle trading signals for one or more tickers.
 
-        This method retrieves historical price data, identifies cup and handle patterns,
-        computes breakout signals when price exceeds the resistance level, and integrates
-        risk management via the RiskManager class. It supports processing for a single ticker
-        or a list of tickers in a vectorized fashion. Additionally, when backtesting,
-        an extended lookback period is used to ensure robust detection of patterns before the
-        start of the backtest period.
+        Retrieves price data, identifies patterns, generates signals, and applies
+        risk management. Supports backtesting and latest signal generation.
 
         Args:
-            ticker (str or List[str]): Stock ticker symbol or list of symbols.
-            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-            initial_position (int): Initial trading position (0 for no position, 1 for long, -1 for short).
-            latest_only (bool): If True, returns only the most recent signal per ticker.
+            ticker (Union[str, List[str]]): Ticker symbol or list of symbols. # <<< Updated docstring
+            start_date (str, optional): Backtest start date ('YYYY-MM-DD').
+                                        Data prior to this is used for lookback.
+            end_date (str, optional): Backtest end date ('YYYY-MM-DD').
+            initial_position (int): Initial position (0, 1) per ticker before start_date.
+                                   (Default: 0). Note: Strategy is long-only.
+            latest_only (bool): If True, return only the latest signal row per ticker.
 
         Returns:
-            pd.DataFrame: DataFrame with columns including 'open', 'high', 'low', 'close', 'volume',
-                          computed technical indicators, signal (1 for breakout), signal_strength, and
-                          risk-managed return metrics (position, return, cumulative_return, exit_type).
+            pd.DataFrame: DataFrame indexed by date (or MultiIndex ['ticker', 'date'])
+                          with columns including prices, signal, signal_strength,
+                          and risk management outputs (position, return, cumulative_return, etc.).
+                          Returns an empty DataFrame if no data is found or processing fails.
         """
-        extra_days = self.params['max_cup_duration'] + self.params['max_handle_duration'] + 20
-        
-        # Determine effective start date for lookback if backtesting or latest signal generation
-        if start_date:
-            effective_start = (pd.Timestamp(start_date) - pd.Timedelta(days=extra_days)).strftime('%Y-%m-%d')
-        else:
-            effective_start = None
-        
-        # For latest_only, use a minimal lookback; otherwise, use an extended period.
+        if initial_position not in [0, 1]:
+             self.logger.warning("Initial position must be 0 or 1 for this long-only strategy. Setting to 0.")
+             initial_position = 0
+
+        required_lookback = int(self.params['max_cup_duration']) + int(self.params['max_handle_duration']) \
+                            + int(self.params['extrema_order']) + 20 # Buffer
+
+        effective_start = None
+        lookback_for_latest = None
+
         if latest_only:
-            price_data = self.get_historical_prices(ticker, lookback=extra_days, from_date=effective_start, to_date=end_date)
+            lookback_for_latest = required_lookback
+        elif start_date:
+            try:
+                start_dt = pd.Timestamp(start_date)
+                effective_start_dt = start_dt - pd.Timedelta(days=int(required_lookback * 1.5))
+                effective_start = effective_start_dt.strftime('%Y-%m-%d')
+            except ValueError:
+                self.logger.error(f"Invalid start_date format: {start_date}. Use 'YYYY-MM-DD'.")
+                return pd.DataFrame()
+
+        self.logger.info(f"Fetching historical prices for {ticker}...") # <<< Use 'ticker' here
+        try:
+            price_data = self.get_historical_prices(
+                tickers=ticker, # <<< Pass 'ticker' to get_historical_prices
+                from_date=effective_start,
+                to_date=end_date,
+                lookback=lookback_for_latest
+            )
+        except DataRetrievalError as e: # Catch specific error from BaseStrategy
+             self.logger.error(f"Data retrieval error for {ticker}: {e}")
+             return pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching price data for {ticker}: {e}")
+            return pd.DataFrame()
+
+        if price_data.empty:
+            self.logger.warning(f"No price data retrieved for {ticker} with given parameters.")
+            return pd.DataFrame()
+
+        # --- Data Structure Handling ---
+        # Determine if the input 'ticker' was a single string or a list
+        # And structure the DataFrame accordingly for groupby
+        input_is_list = isinstance(ticker, list)
+        df_needs_ticker_col = False
+
+        if isinstance(price_data.index, pd.MultiIndex):
+             # Data already has ['ticker', 'date'] index from get_historical_prices
+             is_multi_ticker = True
+             # Ensure the date level is DatetimeIndex
+             price_data.index = price_data.index.set_levels(pd.to_datetime(price_data.index.levels[1]), level=1)
+
+        elif input_is_list and len(ticker) == 1:
+             # Input was a list of one, but get_historical_prices might return a single index DF
+             # Assign the single ticker name and create MultiIndex
+             ticker_name = ticker[0]
+             price_data['ticker'] = ticker_name
+             price_data.index = pd.to_datetime(price_data.index)
+             price_data = price_data.set_index(['ticker', price_data.index])
+             is_multi_ticker = True # Treat as multi for consistency
+             price_data.index.names = ['ticker', 'date'] # Ensure names are set
+
+        elif not input_is_list: # Input was a single string ticker
+             # get_historical_prices for single ticker returns single index DF
+             ticker_name = ticker
+             price_data['ticker'] = ticker_name
+             price_data.index = pd.to_datetime(price_data.index)
+             price_data = price_data.set_index(['ticker', price_data.index])
+             is_multi_ticker = True # Treat as multi for consistency
+             price_data.index.names = ['ticker', 'date'] # Ensure names are set
         else:
-            price_data = self.get_historical_prices(ticker, from_date=effective_start, to_date=end_date)
-        
-        # Process signals for each ticker independently.
-        if isinstance(ticker, str):
-            tickers = [ticker]
-        else:
-            tickers = ticker
-        
-        signals_list = []
-        # When multiple tickers, price_data will have a multi-index or a ticker column.
-        for t, group in price_data.groupby('ticker') if ('ticker' in price_data.columns or isinstance(price_data.index, pd.MultiIndex)) else [(tickers[0], price_data)]:
-            group = group.sort_index()
-            ts_result = self._generate_signals_for_series(group.copy())
-            ts_result['ticker'] = t
-            signals_list.append(ts_result)
-        
-        result = pd.concat(signals_list)
-        
-        # Filter backtest period if start_date and/or end_date provided.
+            # This case (input_is_list > 1, but no MultiIndex) should ideally not happen
+            # based on get_historical_prices logic, but handle defensively.
+            self.logger.error("Inconsistent data structure received from get_historical_prices.")
+            return pd.DataFrame()
+
+        self.logger.info("Generating C&H signals...")
+
+        # Define the function to apply signal generation + risk management
+        def apply_strategy_and_rm(group_df):
+            # group_df comes with MultiIndex, need to drop ticker level for processing
+            single_ticker_df = group_df.reset_index(level='ticker', drop=True)
+            # Ensure index is sorted datetime after reset
+            single_ticker_df = single_ticker_df.sort_index()
+
+            # Generate signals for this single ticker
+            signals_only_df = self._generate_signals_for_ticker(single_ticker_df)
+
+            if signals_only_df.empty:
+                return None # Return None if no signals generated for this group
+
+            # Apply risk management
+            rm_df = self.risk_manager.apply(signals_only_df, initial_position=initial_position)
+            return rm_df
+
+
+        # Apply the combined function using groupby
+        # Using list comprehension and concat handles cases where some groups return None
+        results_list = [apply_strategy_and_rm(group) for _, group in price_data.groupby(level='ticker', group_keys=False)]
+        # Filter out None results and concatenate
+        valid_results = [df for df in results_list if df is not None]
+
+        if not valid_results:
+             self.logger.warning("No valid signals or risk management results generated for any ticker.")
+             return pd.DataFrame()
+
+        # Concatenate results - need to reintroduce the ticker index/column
+        # Get ticker names from the original price_data index
+        ticker_names_in_order = price_data.index.get_level_values('ticker').unique().tolist()
+        final_result = pd.concat(valid_results, keys=ticker_names_in_order, names=['ticker', 'date'])
+
+
+        if final_result.empty:
+             self.logger.warning("Signal generation and RM resulted in an empty DataFrame.")
+             return pd.DataFrame()
+
+        # --- Filtering and Final Selection ---
+        # Filter results to the requested backtest period *after* all processing
         if start_date:
-            result = result[result.index >= pd.to_datetime(start_date)]
+            final_result = final_result[final_result.index.get_level_values('date') >= pd.Timestamp(start_date)]
         if end_date:
-            result = result[result.index <= pd.to_datetime(end_date)]
-        
-        # If latest_only is True, return only the last row per ticker.
-        if latest_only:
-            if 'ticker' in result.columns:
-                result = result.groupby('ticker', group_keys=False).apply(lambda df: df.iloc[[-1]])
-            else:
-                result = result.iloc[[-1]]
-        
-        # Apply risk management adjustments (stop-loss, take-profit, slippage, transaction costs)
-        rm = RiskManager(
-            stop_loss_pct=self.params['stop_loss_pct'],
-            take_profit_pct=self.params['take_profit_pct'],
-            slippage_pct=self.params['slippage_pct'],
-            transaction_cost_pct=self.params['transaction_cost_pct'],
-            trailing_stop_pct=self.params['trailing_stop_pct']
-        )
-        result = rm.apply(result, initial_position=initial_position)
-        
-        return result
-    
-    def _generate_signals_for_series(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Generate cup and handle signals for a single ticker's time series.
+            final_result = final_result[final_result.index.get_level_values('date') <= pd.Timestamp(end_date)]
 
-        This helper function resets the index to ensure integer positional indexing,
-        computes simple moving averages, identifies local extrema for potential pattern points,
-        and iteratively searches for cup and handle formations in the data. Once a breakout is
-        confirmed, a buy signal is generated.
+
+        if final_result.empty:
+             self.logger.warning("No signals found within the specified date range after filtering.")
+             return pd.DataFrame()
+
+        # Handle latest_only: Get the last row for each ticker
+        if latest_only:
+            # Use tail(1) within groupby for multi-index robustness
+            final_result = final_result.groupby(level='ticker', group_keys=False).tail(1)
+
+        self.logger.info("Cup and Handle strategy processing complete.")
+        # Ensure index names are correct before returning
+        final_result.index.names = ['ticker', 'date']
+        return final_result
+
+    # --- Helper methods _generate_signals_for_ticker, _find_cup, _find_handle remain the same ---
+    # (No changes needed in the helper methods themselves regarding the 'ticker' parameter name)
+
+    def _generate_signals_for_ticker(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Generates Cup and Handle signals for a single ticker DataFrame.
 
         Args:
-            df (pd.DataFrame): Historical price data for a single ticker with a datetime index.
+            df (pd.DataFrame): Price data for one ticker, indexed by datetime.
+                               Must contain 'open', 'high', 'low', 'close', 'volume'.
 
         Returns:
-            pd.DataFrame: DataFrame indexed by date with columns for price data, technical indicators,
-                          pattern formation markers, signal (1 for breakout), and the computed signal_strength.
+            pd.DataFrame: DataFrame with signals and pattern info, indexed by datetime.
+                          Includes 'open', 'high', 'low', 'close', 'volume', 'sma20',
+                          'avg_volume', 'signal', 'signal_strength', and pattern details.
+                          Returns empty DataFrame if input data is insufficient.
         """
-        # Ensure the DataFrame is sorted by date and reset index for positional operations.
-        df = df.sort_index()
-        df_reset = df.reset_index()  # 'date' becomes a column.
-        
-        result = pd.DataFrame()
-        result['date'] = df_reset['date']
-        result['open'] = df_reset['open']
-        result['high'] = df_reset['high']
-        result['low'] = df_reset['low']
-        result['close'] = df_reset['close']
-        result['volume'] = df_reset['volume']
-        
-        # Compute technical indicators
+        min_required_data = int(self.params['max_cup_duration']) + int(self.params['max_handle_duration'])
+        if len(df) < min_required_data:
+             # Log ticker name if available (might not be if called directly)
+             ticker_name = df.name if hasattr(df, 'name') else 'Unknown Ticker'
+             self.logger.warning(f"Insufficient data for {ticker_name} (need {min_required_data}, have {len(df)}). Skipping.")
+             return pd.DataFrame()
+
+        # --- Precompute Indicators ---
+        df = df.sort_index() # Ensure chronological order
+        result = df[['open', 'high', 'low', 'close', 'volume']].copy()
         result['sma20'] = result['close'].rolling(window=20, min_periods=1).mean()
         result['avg_volume'] = result['volume'].rolling(window=20, min_periods=1).mean()
-        
-        # Initialize pattern tracking and signal columns.
-        result['in_cup'] = False
-        result['in_handle'] = False
-        result['cup_start'] = np.nan
-        result['cup_bottom'] = np.nan
-        result['cup_end'] = np.nan
-        result['handle_start'] = np.nan
-        result['handle_bottom'] = np.nan
-        result['handle_end'] = np.nan
-        result['pattern_resistance'] = np.nan
+
+        # --- Find Local Extrema ---
+        order = int(self.params['extrema_order'])
+        highs = result['high'].values
+        lows = result['low'].values
+        local_max_indices = argrelextrema(highs, np.greater_equal, order=order)[0] # Use greater_equal for plateaus
+        local_min_indices = argrelextrema(lows, np.less_equal, order=order)[0]    # Use less_equal for plateaus
+
+        # Store extrema indices relative to the start of the DataFrame
+        result['is_local_max'] = False
+        result['is_local_min'] = False
+        if len(local_max_indices) > 0:
+            # Use get_loc for safety with potential non-standard indices
+            max_cols_loc = result.columns.get_loc('is_local_max')
+            result.iloc[local_max_indices, max_cols_loc] = True
+        if len(local_min_indices) > 0:
+            min_cols_loc = result.columns.get_loc('is_local_min')
+            result.iloc[local_min_indices, min_cols_loc] = True
+
+        # --- Initialize State Columns ---
         result['signal'] = 0
-        
-        # Calculate local extrema for potential pattern detection.
-        order = 5
-        arr_high = result['high'].values
-        arr_low = result['low'].values
-        local_max_indices = argrelextrema(arr_high, np.greater, order=order)[0]
-        local_min_indices = argrelextrema(arr_low, np.less, order=order)[0]
-        result.loc[local_max_indices, 'is_local_max'] = True
-        result.loc[local_min_indices, 'is_local_min'] = True
-        result['is_local_max'] = result['is_local_max'].fillna(False)
-        result['is_local_min'] = result['is_local_min'].fillna(False)
-        
-        # Iteratively detect cup and handle formations.
-        for i in range(order, len(result) - self.params['min_handle_duration']):
-            # If no existing pattern is in progress, search for a new cup formation.
-            if not result.at[i-1, 'in_cup'] and not result.at[i-1, 'in_handle']:
-                window_start = max(0, i - (self.params['max_cup_duration'] + self.params['max_handle_duration']))
-                cup_start, cup_bottom, cup_end = self._find_cup(result.iloc[window_start:i])
-                if cup_start is not None and cup_bottom is not None and cup_end is not None:
-                    abs_cup_start = window_start + cup_start
-                    abs_cup_bottom = window_start + cup_bottom
-                    abs_cup_end = window_start + cup_end
-                    left_height = result.at[abs_cup_start, 'high']
-                    right_height = result.at[abs_cup_end, 'high']
-                    bottom_price = result.at[abs_cup_bottom, 'low']
-                    resistance = max(left_height, right_height)
-                    cup_depth = resistance - bottom_price
-                    relative_depth = cup_depth / resistance if resistance != 0 else np.inf
-                    if relative_depth <= self.params['cup_depth_threshold']:
-                        result.at[i, 'in_cup'] = True
-                        result.at[i, 'cup_start'] = abs_cup_start
-                        result.at[i, 'cup_bottom'] = abs_cup_bottom
-                        result.at[i, 'cup_end'] = abs_cup_end
-                        result.at[i, 'pattern_resistance'] = resistance
-            elif result.at[i-1, 'in_cup']:
-                # Continue cup formation tracking.
-                abs_cup_start = int(result.at[i-1, 'cup_start'])
-                abs_cup_bottom = int(result.at[i-1, 'cup_bottom'])
-                abs_cup_end = int(result.at[i-1, 'cup_end'])
-                resistance = result.at[i-1, 'pattern_resistance']
-                result.at[i, 'in_cup'] = True
-                result.at[i, 'cup_start'] = abs_cup_start
-                result.at[i, 'cup_bottom'] = abs_cup_bottom
-                result.at[i, 'cup_end'] = abs_cup_end
-                result.at[i, 'pattern_resistance'] = resistance
-                time_since_cup = i - abs_cup_end
-                if 1 <= time_since_cup <= self.params['max_handle_duration']:
-                    handle_start, handle_bottom, handle_end = self._find_handle(result.iloc[abs_cup_end:i+1], resistance)
-                    if handle_start is not None and handle_bottom is not None and handle_end is not None:
-                        result.at[i, 'in_cup'] = False
-                        result.at[i, 'in_handle'] = True
-                        result.at[i, 'handle_start'] = abs_cup_end + handle_start
-                        result.at[i, 'handle_bottom'] = abs_cup_end + handle_bottom
-                        result.at[i, 'handle_end'] = abs_cup_end + handle_end
-                elif time_since_cup > self.params['max_handle_duration']:
-                    result.at[i, 'in_cup'] = False
-            elif result.at[i-1, 'in_handle']:
-                # Continue handle formation tracking and detect breakout.
-                abs_handle_start = int(result.at[i-1, 'handle_start'])
-                abs_handle_bottom = int(result.at[i-1, 'handle_bottom'])
-                abs_handle_end = int(result.at[i-1, 'handle_end'])
-                resistance = result.at[i-1, 'pattern_resistance']
-                result.at[i, 'in_handle'] = True
-                result.at[i, 'cup_start'] = result.at[i-1, 'cup_start']
-                result.at[i, 'cup_bottom'] = result.at[i-1, 'cup_bottom']
-                result.at[i, 'cup_end'] = result.at[i-1, 'cup_end']
-                result.at[i, 'handle_start'] = abs_handle_start
-                result.at[i, 'handle_bottom'] = abs_handle_bottom
-                result.at[i, 'handle_end'] = abs_handle_end
-                result.at[i, 'pattern_resistance'] = resistance
-                if result.at[i, 'close'] > resistance * (1 + self.params['breakout_threshold']):
-                    if not self.params['volume_confirm'] or result.at[i, 'volume'] > result.at[i, 'avg_volume']:
-                        result.at[i, 'signal'] = 1
-                    result.at[i, 'in_handle'] = False
-                time_in_handle = i - abs_handle_start
-                if time_in_handle > self.params['max_handle_duration']:
-                    result.at[i, 'in_handle'] = False
-        
-        # Compute signal strength as the normalized breakout magnitude.
-        result['signal_strength'] = np.where(
-            (result['signal'] == 1) & result['pattern_resistance'].notna() & (result['pattern_resistance'] != 0),
-            (result['close'] / result['pattern_resistance']) - 1,
-            0
-        )
-        
-        # Retain only relevant columns and set the date as the index.
-        cols_to_keep = ['date', 'open', 'high', 'low', 'close', 'volume', 'sma20', 
-                        'cup_start', 'cup_bottom', 'cup_end', 'handle_start', 'handle_bottom', 
-                        'handle_end', 'pattern_resistance', 'signal', 'signal_strength']
-        result = result[cols_to_keep].set_index('date')
-        return result
-    
-    def _find_cup(self, data: pd.DataFrame) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-        """
-        Identify a cup formation in the provided data segment based on local extrema.
+        result['signal_strength'] = 0.0
+        result['pattern_resistance'] = np.nan
+        result['cup_depth'] = np.nan # Store cup depth for handle check
 
-        The method searches for two local maxima (left and right peaks) with a local
-        minimum (cup bottom) between them. The cup's bottom should occur roughly in the middle,
-        and the relative depth of the cup (difference between resistance and bottom) should be
-        within the specified threshold.
+        # --- Pattern Detection Loop ---
+        start_iter_idx = int(self.params['min_cup_duration']) + int(self.params['min_handle_duration'])
+        last_breakout_idx = -1 # Prevent immediate re-entry after a breakout
 
-        Args:
-            data (pd.DataFrame): A slice of the price DataFrame with local extrema flags.
+        # Use .iloc for positional access in the loop
+        for i in range(start_iter_idx, len(result)):
+            if i <= last_breakout_idx + int(self.params['min_handle_duration']):
+                 continue
 
-        Returns:
-            Tuple[Optional[int], Optional[int], Optional[int]]:
-                - cup_start: Position index of the left peak.
-                - cup_bottom: Position index of the cup bottom.
-                - cup_end: Position index of the right peak.
-            Returns (None, None, None) if a valid cup is not found.
-        """
-        if len(data) < self.params['min_cup_duration']:
-            return None, None, None
-        
-        # Retrieve indices of local maxima and minima.
-        max_indices = data.index[data['is_local_max']]
-        min_indices = data.index[data['is_local_min']]
-        
-        if len(max_indices) < 2 or len(min_indices) < 1:
-            return None, None, None
-        
-        # Check for cup pattern by iterating over possible left and right peaks.
-        for left_idx in max_indices:
-            left_pos = data.index.get_loc(left_idx)
-            for right_idx in max_indices:
-                right_pos = data.index.get_loc(right_idx)
-                if right_pos <= left_pos:
-                    continue
-                cup_duration = right_pos - left_pos
-                if cup_duration < self.params['min_cup_duration'] or cup_duration > self.params['max_cup_duration']:
-                    continue
-                cup_slice = data.iloc[left_pos:right_pos+1]
-                if len(cup_slice) < 3:
-                    continue
-                bottom_idx = cup_slice['low'].idxmin()
-                bottom_pos = data.index.get_loc(bottom_idx)
-                if bottom_pos <= left_pos + cup_duration * 0.2 or bottom_pos >= left_pos + cup_duration * 0.8:
-                    continue
-                left_price = data.loc[left_idx, 'high']
-                right_price = data.loc[right_idx, 'high']
-                if abs(left_price - right_price) / max(left_price, right_price) > 0.1:
-                    continue
-                bottom_region = cup_slice.iloc[cup_duration // 3: (cup_duration * 2) // 3]
-                bottom_range = bottom_region['low'].max() - bottom_region['low'].min()
-                cup_depth = max(left_price, right_price) - data.loc[bottom_idx, 'low']
-                if bottom_range > cup_depth * 0.2:
-                    continue
-                return left_pos, bottom_pos, right_pos
-        return None, None, None
-    
-    def _find_handle(self, data: pd.DataFrame, resistance: float) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-        """
-        Identify a handle formation in the given data segment after the cup formation.
+            window_end_idx = i - int(self.params['min_handle_duration']) # Potential end of cup / start of handle
+            window_start_idx = max(0, window_end_idx - int(self.params['max_cup_duration']))
 
-        The method looks for a handle which is characterized by a minor dip in price following the cup.
-        The handle formation starts at the cup's right rim and should end with a local high near the resistance level.
-
-        Args:
-            data (pd.DataFrame): Price data from the cup end to the current bar.
-            resistance (float): The resistance level determined from the cup formation.
-
-        Returns:
-            Tuple[Optional[int], Optional[int], Optional[int]]:
-                - handle_start: Relative index in the data segment where the handle starts.
-                - handle_bottom: Relative index where the handle's lowest price occurs.
-                - handle_end: Relative index where the handle formation ends (local high).
-            Returns (None, None, None) if a valid handle is not detected.
-        """
-        if len(data) < self.params['min_handle_duration']:
-            return None, None, None
-        
-        max_indices = data.index[data['is_local_max']]
-        min_indices = data.index[data['is_local_min']]
-        
-        if len(max_indices) < 1 or len(min_indices) < 1:
-            return None, None, None
-        
-        # The handle formation typically starts at the beginning of the data segment.
-        handle_start = data.index[0]
-        start_pos = 0
-        for min_idx in min_indices:
-            min_pos = data.index.get_loc(min_idx)
-            if min_pos <= start_pos:
+            if window_end_idx <= window_start_idx + int(self.params['min_cup_duration']):
                 continue
-            duration_to_min = min_pos - start_pos
-            if duration_to_min < 2 or duration_to_min > self.params['max_handle_duration'] // 2:
-                continue
-            handle_price = data.loc[min_idx, 'low']
-            handle_depth = data.loc[handle_start, 'high'] - handle_price
-            for max_idx in max_indices:
-                max_pos = data.index.get_loc(max_idx)
-                if max_pos <= min_pos:
+
+            # Pass a slice using iloc for positional indexing consistency
+            cup_data_slice = result.iloc[window_start_idx : window_end_idx]
+            # Reset index for internal helper consistency if they rely on 0-based index
+            cup_data_slice_reset = cup_data_slice.reset_index(drop=True)
+
+
+            cup_found = self._find_cup(cup_data_slice_reset) # Pass reset index slice
+
+            if cup_found:
+                cup_left_idx_rel, cup_bottom_idx_rel, cup_right_idx_rel, resistance, cup_depth = cup_found
+                # Indices relative to the start of the *slice* (cup_data_slice)
+                # Need absolute index in the *full* result DataFrame
+                abs_cup_left_idx = window_start_idx + cup_left_idx_rel
+                abs_cup_bottom_idx = window_start_idx + cup_bottom_idx_rel
+                abs_cup_right_idx = window_start_idx + cup_right_idx_rel
+
+                handle_window_start_idx = abs_cup_right_idx # Start handle check right after cup end
+                handle_window_end_idx = i + 1 # Include current index i
+                if handle_window_end_idx <= handle_window_start_idx + int(self.params['min_handle_duration']):
                     continue
-                total_duration = max_pos - start_pos
-                if total_duration < self.params['min_handle_duration'] or total_duration > self.params['max_handle_duration']:
+
+                # Pass slice using iloc
+                handle_data_slice = result.iloc[handle_window_start_idx : handle_window_end_idx]
+                handle_data_slice_reset = handle_data_slice.reset_index(drop=True)
+
+                handle_found = self._find_handle(handle_data_slice_reset, resistance, cup_depth)
+
+                if handle_found:
+                    # Check for breakout at the current index 'i'.
+                    current_close = result.iloc[i]['close']
+                    breakout_level = resistance * (1 + self.params['breakout_threshold'])
+
+                    if current_close > breakout_level:
+                        volume_ok = True
+                        if self.params['volume_confirm']:
+                             current_volume = result.iloc[i]['volume']
+                             avg_volume = result.iloc[i]['avg_volume']
+                             if pd.notna(avg_volume) and avg_volume > 0:
+                                 volume_ok = current_volume > avg_volume
+                             else:
+                                 # If avg_volume is NaN or 0, cannot confirm with volume
+                                 volume_ok = False # Treat as non-confirmed if required
+
+                        if volume_ok:
+                             # --- Breakout Confirmed ---
+                             # Use get_loc for column positions
+                             signal_col_loc = result.columns.get_loc('signal')
+                             res_col_loc = result.columns.get_loc('pattern_resistance')
+                             depth_col_loc = result.columns.get_loc('cup_depth')
+                             strength_col_loc = result.columns.get_loc('signal_strength')
+
+                             result.iloc[i, signal_col_loc] = 1
+                             result.iloc[i, res_col_loc] = resistance
+                             result.iloc[i, depth_col_loc] = cup_depth
+
+                             if resistance > 0:
+                                 strength = (current_close / resistance) - 1
+                                 result.iloc[i, strength_col_loc] = strength
+
+                             last_breakout_idx = i
+
+        # --- Final Cleanup ---
+        cols_to_keep = ['open', 'high', 'low', 'close', 'volume', 'signal', 'signal_strength',
+                        'pattern_resistance', 'cup_depth']
+        final_df = result[cols_to_keep]
+
+        return final_df
+
+
+    def _find_cup(self, data: pd.DataFrame) -> Optional[Tuple[int, int, int, float, float]]:
+        """
+        Identifies the best valid cup formation within the provided data slice.
+        Args:
+            data (pd.DataFrame): Slice with 0-based integer index. Must contain
+                                 'high', 'low', 'is_local_max', 'is_local_min'.
+        Returns:
+            Optional[Tuple[int, int, int, float, float]]: Relative indices within the slice,
+            resistance, and cup depth, or None.
+        """
+        n = len(data)
+        if n < int(self.params['min_cup_duration']):
+            return None
+
+        # Find indices relative to the 0-based index of the slice 'data'
+        max_indices_rel = data.index[data['is_local_max']].tolist()
+        min_indices_rel = data.index[data['is_local_min']].tolist()
+
+
+        if len(max_indices_rel) < 2 or len(min_indices_rel) < 1:
+            return None
+
+        best_cup = None
+        max_resistance = -np.inf
+
+        for i in range(len(max_indices_rel)):
+            left_idx_rel = max_indices_rel[i]
+
+            for j in range(i + 1, len(max_indices_rel)):
+                right_idx_rel = max_indices_rel[j]
+
+                duration = right_idx_rel - left_idx_rel
+                if not (int(self.params['min_cup_duration']) <= duration <= int(self.params['max_cup_duration'])):
                     continue
-                handle_end_price = data.loc[max_idx, 'high']
-                if handle_end_price < resistance * 0.95 or handle_end_price > resistance:
+
+                # Find Bottom between peaks (using relative indices)
+                relevant_min_indices_rel = [m_idx for m_idx in min_indices_rel if left_idx_rel < m_idx < right_idx_rel]
+                if not relevant_min_indices_rel:
+                     # Check if there's any low point between peaks, even if not flagged by argrelextrema
+                     if data.iloc[left_idx_rel+1 : right_idx_rel]['low'].empty:
+                         continue # No data between peaks
+                     bottom_idx_rel_provisional = data.iloc[left_idx_rel+1 : right_idx_rel]['low'].idxmin()
+                     # Verify this provisional bottom isn't too close to edges
+                     if not (left_idx_rel + duration * 0.2 < bottom_idx_rel_provisional < left_idx_rel + duration * 0.8):
+                         continue
+                     # It's a potential bottom, proceed with this index
+                     bottom_idx_rel = bottom_idx_rel_provisional
+                else:
+                     # Find the minimum among the flagged local minima between peaks
+                     cup_slice_mins = data.iloc[relevant_min_indices_rel]
+                     bottom_idx_rel = cup_slice_mins['low'].idxmin()
+                     # Re-check position constraint for the identified minimum
+                     if not (left_idx_rel + duration * 0.2 < bottom_idx_rel < left_idx_rel + duration * 0.8):
+                          continue
+
+
+                p_left = data.iloc[left_idx_rel]['high']
+                p_right = data.iloc[right_idx_rel]['high']
+                resistance = max(p_left, p_right)
+                p_bottom = data.iloc[bottom_idx_rel]['low']
+
+                if resistance <= 0: continue
+
+                if abs(p_left - p_right) / resistance > self.params['peak_similarity_threshold']:
                     continue
-                return start_pos, min_pos, max_pos
-        return None, None, None
+
+                cup_depth = resistance - p_bottom
+                if cup_depth / resistance > self.params['cup_depth_threshold']:
+                    continue
+
+                if resistance > max_resistance:
+                     max_resistance = resistance
+                     best_cup = (left_idx_rel, bottom_idx_rel, right_idx_rel, resistance, cup_depth)
+
+        return best_cup
+
+
+    def _find_handle(self, data: pd.DataFrame, resistance: float, cup_depth: float) -> Optional[Tuple[int, int, int]]:
+        """
+        Identifies a valid handle formation within the provided data slice.
+        Args:
+            data (pd.DataFrame): Slice with 0-based integer index. Must contain
+                                 'high', 'low', 'is_local_min'.
+            resistance (float): Resistance from the cup.
+            cup_depth (float): Depth from the cup.
+        Returns:
+            Optional[Tuple[int, int, int]]: Relative indices for handle start, bottom, end, or None.
+        """
+        n = len(data)
+        if n < int(self.params['min_handle_duration']):
+            return None
+
+        handle_start_idx_rel = 0
+        # Use high of the first point in the handle slice as reference
+        handle_start_price_ref = data.iloc[handle_start_idx_rel]['high']
+
+        # Find indices relative to the 0-based index of the slice 'data'
+        min_indices_rel = data.index[data['is_local_min']].tolist()
+
+        possible_handles = []
+
+        # Consider *any* low point within the handle duration as a potential bottom
+        # Not just those flagged by argrelextrema with the cup's order
+        potential_bottoms = []
+        if n > 1: # Need at least two points to have a bottom different from start
+            search_end = min(n, int(self.params['max_handle_duration'])) # Look within max duration
+            relevant_slice = data.iloc[1:search_end] # Exclude the start point itself
+            if not relevant_slice.empty:
+                bottom_idx_rel_provisional = relevant_slice['low'].idxmin()
+                potential_bottoms.append(bottom_idx_rel_provisional)
+
+        # Combine with flagged minima if they fall in range
+        for idx in min_indices_rel:
+            if 0 < idx < int(self.params['max_handle_duration']) and idx not in potential_bottoms:
+                potential_bottoms.append(idx)
+
+        if not potential_bottoms:
+            return None # No potential bottom found
+
+        for bottom_idx_rel in sorted(potential_bottoms): # Check earlier bottoms first
+            duration_to_bottom = bottom_idx_rel - handle_start_idx_rel
+            # Min duration to bottom check (e.g., needs at least 1 bar drop)
+            if duration_to_bottom < 1: # Adjusted from 2 to allow immediate dip
+                 continue
+
+            p_handle_bottom = data.iloc[bottom_idx_rel]['low']
+            # Use the high at the actual start of the handle data slice
+            handle_depth = handle_start_price_ref - p_handle_bottom
+
+            if cup_depth <= 0: continue # Avoid division by zero
+            if handle_depth < 0: continue # Handle bottom cannot be higher than handle start high
+
+            # Check depth relative to cup depth
+            if handle_depth / cup_depth > self.params['handle_depth_threshold']:
+                 continue
+
+            # Check handle low doesn't undercut too much of the cup's rise
+            # E.g., stays above 60% retracement from resistance
+            if p_handle_bottom < resistance - cup_depth * 0.6:
+                 continue
+
+            # The handle "end" is considered the last point of the data slice passed in,
+            # as breakout is checked externally.
+            handle_end_idx_rel = n - 1
+
+            total_duration = handle_end_idx_rel - handle_start_idx_rel
+            if not (int(self.params['min_handle_duration']) <= total_duration <= int(self.params['max_handle_duration'])):
+                 continue
+
+            # Found a valid handle structure ending at the end of this slice
+            possible_handles.append((handle_start_idx_rel, bottom_idx_rel, handle_end_idx_rel))
+            break # Take the first valid handle bottom found
+
+
+        if possible_handles:
+             return possible_handles[0]
+        else:
+             return None

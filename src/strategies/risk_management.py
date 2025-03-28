@@ -1,3 +1,5 @@
+# trading_system/src/strategies/risk_management.py
+
 """
 TODO: Check if 
 1) position sizing
