@@ -6,8 +6,8 @@ Usage Example:
   run the hyperparameter search, and log everything using mlflow.
 """
 
-from src.optimizer.strategy_optimizer import StrategyOptimizer
-from src.optimizer.sensitivity_analyzer import SensitivityAnalyzer
+from optimizer.ticker_level.strategy_optimizer import StrategyOptimizer
+from optimizer.ticker_level.sensitivity_analyzer import SensitivityAnalyzer
 from src.strategies.momentum.awesome_oscillator_strat import AwesomeOscillatorStrategy
 from hyperopt import hp
 import mlflow

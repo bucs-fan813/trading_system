@@ -117,7 +117,6 @@ cup_and_handle_strat_search_space = {
     'cup_depth_threshold': hp.uniform('cup_depth_threshold', 0.15, 0.50), # Max relative depth (D/R)
     'peak_similarity_threshold': hp.uniform('peak_similarity_threshold', 0.05, 0.25), # Max relative diff between cup peaks |Pl-Pr|/R
     
-
     # Handle Detection Parameters
     'min_handle_duration': hp.quniform('min_handle_duration', 3, 15, 1), # Approx 3 days to 3 weeks
     'max_handle_duration': hp.quniform('max_handle_duration', 15, 50, 2), # Approx 3 weeks to 2.5 months # Ensure min_handle_duration < max_handle_duration in your objective function if needed
