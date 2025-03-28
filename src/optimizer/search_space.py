@@ -111,42 +111,29 @@ prophet_momentum_strat_search_space = {
 }
 
 cup_and_handle_strat_search_space = {
-    # === Cup Detection Parameters ===
+    # Cup Detection Parameters
     'min_cup_duration': hp.quniform('min_cup_duration', 20, 60, 1), # Approx 1-3 months
-    
-    'max_cup_duration': hp.quniform('max_cup_duration', 60, 200, 5), # Approx 3-10 months
-        # Ensure min_cup_duration < max_cup_duration in your objective function if needed
-    
+    'max_cup_duration': hp.quniform('max_cup_duration', 60, 200, 5), # Approx 3-10 months # Ensure min_cup_duration < max_cup_duration in your objective function if needed
     'cup_depth_threshold': hp.uniform('cup_depth_threshold', 0.15, 0.50), # Max relative depth (D/R)
-    
     'peak_similarity_threshold': hp.uniform('peak_similarity_threshold', 0.05, 0.25), # Max relative diff between cup peaks |Pl-Pr|/R
     
 
-    # === Handle Detection Parameters ===
+    # Handle Detection Parameters
     'min_handle_duration': hp.quniform('min_handle_duration', 3, 15, 1), # Approx 3 days to 3 weeks
-    
-    'max_handle_duration': hp.quniform('max_handle_duration', 15, 50, 2), # Approx 3 weeks to 2.5 months
-        # Ensure min_handle_duration < max_handle_duration in your objective function if needed
-    
+    'max_handle_duration': hp.quniform('max_handle_duration', 15, 50, 2), # Approx 3 weeks to 2.5 months # Ensure min_handle_duration < max_handle_duration in your objective function if needed
     'handle_depth_threshold': hp.uniform('handle_depth_threshold', 0.25, 0.65 ),# Max handle depth relative to cup depth (Dh/D)
     
-
-    # === Pattern Recognition Parameters ===
+    # Pattern Recognition Parameters
      'extrema_order': hp.quniform('extrema_order', 3, 15, 1), # Order for local extrema detection (scipy.signal.argrelextrema)
      
-
-    # === Breakout Parameters ===
+    # Breakout Parameters 
     'breakout_threshold': hp.loguniform('breakout_threshold', np.log(0.002), np.log(0.025)), # % above resistance for signal (0.2% to 2.5%)
-    
     'volume_confirm': hp.choice('volume_confirm', [True, False]), # Whether to require volume surge on breakout
     
-
-    # === Risk Management Parameters (from RiskManager) ===
+    # Risk Management Parameters (from RiskManager)
     'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.15), # 3% to 15% stop loss
-    
     'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.30), # 5% to 30% take profit
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.15 # 0% (disabled) 
-    ),
+    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.15) # 0% (disabled) 
 }
 
 triangle_breakout_strat_search_space = {
