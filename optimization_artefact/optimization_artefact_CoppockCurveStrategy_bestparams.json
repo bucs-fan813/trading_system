@@ -1,0 +1,14 @@
+{
+    "long_only": true,
+    "method": "directional",
+    "normalize_strength": true,
+    "roc1_months": 14.0,
+    "roc2_months": 10.0,
+    "stop_loss_pct": 0.09440026132017895,
+    "strength_window": 315.0,
+    "sustain_days": 6.0,
+    "take_profit_pct": 0.18383105595228982,
+    "trailing_stop_pct": 0.044196331273630776,
+    "trend_strength_threshold": 0.7860356993029923,
+    "wma_lookback": 13.0
+}

@@ -332,7 +332,7 @@ know_sure_thing_strat_search_space = {
     'risk_params': {
         'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Tighter for Indian markets
         'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
-        'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05)
+        'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.05)
     }
 }
 

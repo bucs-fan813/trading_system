@@ -1,0 +1,8 @@
+{
+    "long_only": false,
+    "long_period": 38.0,
+    "short_period": 11.0,
+    "stop_loss_pct": 0.09289498856725506,
+    "take_profit_pct": 0.06540744190690194,
+    "trailing_stop_pct": 0.08332033531408853
+}

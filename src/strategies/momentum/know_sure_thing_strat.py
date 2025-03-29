@@ -89,6 +89,11 @@ class KSTStrategy(BaseStrategy):
         params = params or {}
         for key, value in default_params.items():
             params.setdefault(key, value)
+
+        params['roc_periods'] = list(params['roc_periods'])
+        params['sma_periods'] = list(params['sma_periods'])
+        params['kst_weights'] = list(params['kst_weights'])
+        params['signal_period'] = int(params['signal_period'])
             
         super().__init__(db_config, params)
         self._validate_parameters()
@@ -110,7 +115,7 @@ class KSTStrategy(BaseStrategy):
         if len(self.params['roc_periods']) != 4 or len(self.params['sma_periods']) != 4:
             raise ValueError("roc_periods and sma_periods must contain exactly 4 values")
             
-        if any(p <= 0 for p in self.params['roc_periods'] + self.params['sma_periods'] + [self.params['signal_period']]):
+        if any(p <= 0 for p in (self.params['roc_periods'] + self.params['sma_periods'] + [self.params['signal_period']])):
             raise ValueError("All periods must be positive integers")
 
     def generate_signals(self, 
@@ -202,6 +207,21 @@ class KSTStrategy(BaseStrategy):
                     sig['signal'] = sig['position'].replace(0, np.nan).ffill().fillna(0)
                     sig['signal_strength'] = kst - signal_line
                     # Apply risk management adjustments.
+
+                    sig_for_risk_manager = sig # Create a variable to hold the potentially modified df
+                    if isinstance(sig.index, pd.MultiIndex):
+                        try:
+                            # Try dropping by name first (most robust)
+                            sig_for_risk_manager.index = sig.index.droplevel('ticker')
+                        except KeyError:
+                            # Fallback: If 'ticker' level isn't named 'ticker', assume it's level 0
+                            if sig.index.nlevels > 1:
+                                self.logger.warning("MultiIndex level 'ticker' not found by name, dropping level 0 instead.")
+                                sig_for_risk_manager.index = sig.index.droplevel(0)
+                            else:
+                                # Should not happen if it's a MultiIndex, but log just in case
+                                self.logger.error("Cannot drop ticker level from MultiIndex.")
+
                     return self.risk_manager.apply(sig, initial_position)
 
                 # Apply signal computation per ticker group.

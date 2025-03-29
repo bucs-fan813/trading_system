@@ -644,7 +644,11 @@ class StrategyOptimizer:
                  # Optional: Add parameters to the report
                  if not portfolio_report_df.empty:
                       for p_name, p_val in best_params.items():
-                           portfolio_report_df[f'param_{p_name}'] = p_val
+                           try:
+                               portfolio_report_df[f'param_{p_name}'] = p_val
+                           except Exception as e:
+                               converted_val = ', '.join(map(str, p_val))
+                               portfolio_report_df[f'param_{p_name}'] = converted_val
 
 
                  # Parameter History Report (all trials)
