@@ -32,7 +32,7 @@ all_tickers = tickers["Ticker"].tolist()
 
 #########################################################
 
-from src.strategies.momentum.mcad_strat import MACDStrategy
+from strategies.momentum.macd_strat import MACDStrategy
 
 strategy = MACDStrategy(db_config)
 
