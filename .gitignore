@@ -3,7 +3,8 @@ scripts/
 __pycache__/
 *.py[cod]
 # Ignore Jupyter Notebook checkpoints
-.ipynb_checkpoints/
+notebooks/
+*.ipynb_checkpoints/
 */__pycache__/
 test_trading_system.db
 src/data/trading_system.db

@@ -363,10 +363,6 @@ relative_vigor_index_strat_search_space = {
     'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Stop loss percentage
     'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.20),  # Take profit percentage
     'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),  # Trailing stop percentage
-    
-    # Transaction cost parameters (adjusted for Indian markets)
-    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0003), np.log(0.002)),  # Estimated slippage
-    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # Trading costs
 }
 
 sma_crossover_strat_search_space = {
