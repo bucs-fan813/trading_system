@@ -146,107 +146,125 @@ class PerformanceEvaluator:
     ) -> MetricsDict:
         """
         Calculates performance metrics for a multi-asset portfolio.
-
-        It simulates portfolio returns based on daily signals and an allocation rule,
-        then calculates metrics on the resulting portfolio return stream.
-
-        Args:
-            signals_dict (Dict[str, pd.DataFrame]): Dictionary mapping ticker symbols
-                to their signal DataFrames. Each DataFrame must include 'close' and
-                'signal' columns, indexed by date.
-            allocation_rule (str): Method for allocating capital daily.
-                Currently supports:
-                - 'equal_weight_active': Equal weight to all assets with a non-zero
-                  signal for the day (respecting signal sign). No leverage.
-            annualization_factor (int): Factor for annualizing metrics (default 252).
-
-        Returns:
-            MetricsDict: Dictionary of computed portfolio performance metrics,
-                         including 'signal_accuracy'.
+        # ... (rest of docstring) ...
         """
         if not signals_dict:
             logger.warning("Signals dictionary is empty. Cannot compute portfolio metrics.")
+            # Ensure all expected keys are returned with 0.0
             return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
-        # --- 1. Prepare Data ---
-        processed_dfs = {}
+        # --- 1. Prepare Data (Combine FIRST) ---
         required_cols = ['close', 'signal']
-        all_dates = set()
+        processed_dfs = {}
+        valid_tickers = []
 
         for ticker, df in signals_dict.items():
             if df.empty or not all(col in df.columns for col in required_cols):
                 logger.warning(f"Skipping ticker {ticker} due to missing columns or empty data.")
                 continue
-            df = df[required_cols].copy()
-            df['daily_return'] = df['close'].pct_change() # Use close-to-close return
-            # Shift signal to align with the return it predicts (signal[t-1] predicts return[t])
-            df['signal_prev'] = df['signal'].shift(1)
-            processed_dfs[ticker] = df.dropna(subset=['daily_return', 'signal_prev']) # Drop rows where return or prev_signal is NaN
-            all_dates.update(processed_dfs[ticker].index)
+            # Select only necessary columns BEFORE combining
+            processed_dfs[ticker] = df[required_cols].copy()
+            valid_tickers.append(ticker)
 
         if not processed_dfs:
-             logger.warning("No valid data after processing tickers. Cannot compute portfolio metrics.")
+             logger.warning("No valid data after initial processing of tickers. Cannot compute portfolio metrics.")
              return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
         # Combine into a single DataFrame aligned by date
-        combined_df = pd.concat(processed_dfs, axis=1)
+        combined_df = pd.concat(processed_dfs, axis=1, keys=valid_tickers) # Use keys to create top level
         combined_df.index = pd.to_datetime(combined_df.index)
         combined_df = combined_df.sort_index()
-        # Reindex to ensure all days are present, forward fill missing price/signal data briefly if needed? Or just use available data. Let's use available.
-        # combined_df = combined_df.loc[sorted(list(all_dates))] # Ensure we only use dates where we had *some* data initially
 
-        # Extract relevant columns
-        returns_df = combined_df.xs('daily_return', level=1, axis=1)
-        signals_prev_df = combined_df.xs('signal_prev', level=1, axis=1)
+        # --- Calculate returns and signals AFTER combining ---
+        close_df = combined_df.xs('close', level=1, axis=1)
+        signal_df = combined_df.xs('signal', level=1, axis=1)
+
+        # Calculate daily returns for all tickers simultaneously
+        returns_df = close_df.pct_change() # First row will be NaN
+
+        # Calculate previous day's signal for all tickers simultaneously
+        signals_prev_df = signal_df.shift(1) # First row will be NaN
 
         # --- 2. Calculate Portfolio Returns ---
-        portfolio_returns = pd.Series(index=returns_df.index, dtype=float)
+        portfolio_returns = pd.Series(index=returns_df.index, dtype=float) # Initialize empty Series
 
         if allocation_rule == 'equal_weight_active':
-            # Count non-zero signals per day
-            active_signals_count = (signals_prev_df != 0).sum(axis=1)
+            # Count non-zero signals per day (handle potential NaNs from shift)
+            active_signals_count = (signals_prev_df.fillna(0) != 0).sum(axis=1) # Treat NaN signal as 0 for counting
+
             # Calculate weights: 1/N for active signals, 0 otherwise
-            weights = signals_prev_df.apply(lambda x: x / active_signals_count.loc[x.name] if active_signals_count.loc[x.name] > 0 else 0, axis=1)
+            # Make sure weights df has same index/columns as signals_prev_df
+            weights = pd.DataFrame(0.0, index=signals_prev_df.index, columns=signals_prev_df.columns)
+
+            # Iterate through rows to calculate weights safely
+            for date, count in active_signals_count.items():
+                 if count > 0:
+                      # Get the signals for this date (fill NaN with 0)
+                      signals_on_date = signals_prev_df.loc[date].fillna(0)
+                      # Assign weight only where signal is non-zero
+                      non_zero_mask = signals_on_date != 0
+                      weights.loc[date, non_zero_mask] = signals_on_date[non_zero_mask] / count
+
+
             # Calculate daily portfolio return: sum(weight * return)
             # Ensure alignment and handle potential NaNs by treating them as zero contribution
+            # Both weights and returns_df should now align correctly on DatetimeIndex and ticker columns
             portfolio_returns = (weights * returns_df).sum(axis=1, skipna=True)
 
         else:
             logger.error(f"Unsupported allocation_rule: {allocation_rule}")
             return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
-        # Fill NaNs that might result from days with no active signals or all returns being NaN
-        portfolio_returns = portfolio_returns.fillna(0.0)
+        # --- CRITICAL: Drop initial NaNs introduced by pct_change/shift ---
+        # This ensures we only feed valid return numbers to the metrics calculation
+        portfolio_returns = portfolio_returns.dropna()
+
+        # Check if empty after dropna
+        if portfolio_returns.empty:
+             logger.warning("Portfolio returns series is empty after dropping initial NaNs. Cannot compute metrics.")
+             return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
+
+
+        # Print the valid portfolio returns series for debugging
+        print("--- Valid Portfolio Returns Series ---")
+        print(portfolio_returns)
+        print(f"Length: {len(portfolio_returns)}, Type: {type(portfolio_returns)}, Dtype: {portfolio_returns.dtype}")
+        print("--- End Portfolio Returns Series ---")
+
 
         # --- 3. Calculate Standard Metrics on Portfolio Returns ---
+        # Now portfolio_returns should be a clean Series
         metrics = PerformanceEvaluator._calculate_metrics_from_returns(portfolio_returns, annualization_factor)
 
         # --- 4. Calculate Signal Accuracy ---
         correct_signals = 0
         total_non_zero_signals = 0
 
-        # Iterate through days and tickers where we have both signal and return
+        # Iterate through days and tickers where we have both signal_prev and return
+        # Use the PRE-dropna indexes/columns for this comparison
         common_index = signals_prev_df.index.intersection(returns_df.index)
-        valid_signals = signals_prev_df.loc[common_index]
+        valid_signals_prev = signals_prev_df.loc[common_index]
         valid_returns = returns_df.loc[common_index]
 
         for date in common_index:
-             for ticker in valid_signals.columns:
-                 signal = valid_signals.loc[date, ticker]
+             for ticker in valid_signals_prev.columns: # Iterate through ticker columns
+                 signal_prev = valid_signals_prev.loc[date, ticker]
                  ret = valid_returns.loc[date, ticker]
 
-                 if pd.notna(signal) and pd.notna(ret) and signal != 0:
+                 # Check validity *before* comparison
+                 if pd.notna(signal_prev) and pd.notna(ret) and signal_prev != 0:
                      total_non_zero_signals += 1
                      # Check if signal sign matches return sign (treat 0 return as neutral/incorrect)
-                     if np.sign(signal) == np.sign(ret) and ret != 0:
+                     if np.sign(signal_prev) == np.sign(ret) and ret != 0: # Compare prev signal with current return
                          correct_signals += 1
 
         signal_accuracy = (correct_signals / total_non_zero_signals) if total_non_zero_signals > 0 else 0.0
-        metrics['signal_accuracy'] = signal_accuracy
+        metrics['signal_accuracy'] = signal_accuracy # Add to metrics dict
 
         # Log metrics to MLflow if a run is active
         if mlflow.active_run():
-            mlflow.log_metrics({f"portfolio_{k}": v for k, v in metrics.items()})
+            # Add prefix to distinguish these portfolio metrics
+            mlflow.log_metrics({f"portfolio_{k}": v for k, v in metrics.items() if pd.notna(v)})
 
         return metrics
 
@@ -281,7 +299,7 @@ class PerformanceEvaluator:
         # Assume 'position' column dictates holding based on *previous* day's signal/decision
         df_copy['strategy_return'] = df_copy['daily_return'] * df_copy['position'].shift(1)
         strategy_returns = df_copy['strategy_return'].fillna(0.0) # Fill NaNs from pct_change and shift
-
+        
         # Calculate metrics using the common helper function
         metrics = PerformanceEvaluator._calculate_metrics_from_returns(strategy_returns, annualization_factor)
 
