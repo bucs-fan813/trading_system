@@ -146,14 +146,50 @@ class PerformanceEvaluator:
     ) -> MetricsDict:
         """
         Calculates performance metrics for a multi-asset portfolio.
-        # ... (rest of docstring) ...
+        Handles single-ticker case by delegating.
         """
         if not signals_dict:
             logger.warning("Signals dictionary is empty. Cannot compute portfolio metrics.")
-            # Ensure all expected keys are returned with 0.0
             return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
-        # --- 1. Prepare Data (Combine FIRST) ---
+        # --- Handle single ticker case first ---
+        if len(signals_dict) == 1:
+            ticker, df_single = list(signals_dict.items())[0]
+            logger.info(f"Calculating metrics for single ticker: {ticker}. Delegating.")
+            if 'position' not in df_single.columns:
+                 logger.error(f"Single ticker DataFrame for {ticker} missing 'position' column. Cannot calculate performance.")
+                 accuracy = 0.0 # Try to calculate accuracy
+                 try:
+                      if 'signal' in df_single.columns and 'close' in df_single.columns:
+                         df_copy = df_single[['signal', 'close']].copy()
+                         df_copy['return'] = df_copy['close'].pct_change()
+                         df_copy['signal_prev'] = df_copy['signal'].shift(1)
+                         df_copy = df_copy.dropna()
+                         correct = (np.sign(df_copy['signal_prev']) == np.sign(df_copy['return'])) & (df_copy['signal_prev'] != 0) & (df_copy['return'] != 0)
+                         total_valid = (df_copy['signal_prev'] != 0) & pd.notna(df_copy['signal_prev']) & pd.notna(df_copy['return'])
+                         accuracy = correct.sum() / total_valid.sum() if total_valid.sum() > 0 else 0.0
+                 except Exception: pass # Ignore accuracy calc error if main data missing
+                 return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': accuracy}
+
+            metrics_single = PerformanceEvaluator.compute_single_asset_metrics(df_single, annualization_factor)
+            try: # Calculate accuracy separately
+                df_copy = df_single[['signal', 'close']].copy()
+                df_copy['return'] = df_copy['close'].pct_change()
+                df_copy['signal_prev'] = df_copy['signal'].shift(1)
+                df_copy = df_copy.dropna()
+                correct_signals = (np.sign(df_copy['signal_prev']) == np.sign(df_copy['return'])) & (df_copy['signal_prev'] != 0) & (df_copy['return'] != 0)
+                total_non_zero_signals = (df_copy['signal_prev'] != 0) & pd.notna(df_copy['signal_prev']) & pd.notna(df_copy['return'])
+                signal_accuracy = correct_signals.sum() / total_non_zero_signals.sum() if total_non_zero_signals.sum() > 0 else 0.0
+                metrics_single['signal_accuracy'] = signal_accuracy
+            except Exception as e_acc:
+                logger.warning(f"Could not calculate signal accuracy for single asset {ticker}: {e_acc}")
+                metrics_single['signal_accuracy'] = 0.0
+            return metrics_single
+        # --- End of single ticker handling ---
+
+
+        # --- Multi-ticker logic starts here ---
+        logger.info(f"Calculating portfolio metrics for {len(signals_dict)} tickers.")
         required_cols = ['close', 'signal']
         processed_dfs = {}
         valid_tickers = []
@@ -162,7 +198,6 @@ class PerformanceEvaluator:
             if df.empty or not all(col in df.columns for col in required_cols):
                 logger.warning(f"Skipping ticker {ticker} due to missing columns or empty data.")
                 continue
-            # Select only necessary columns BEFORE combining
             processed_dfs[ticker] = df[required_cols].copy()
             valid_tickers.append(ticker)
 
@@ -170,100 +205,88 @@ class PerformanceEvaluator:
              logger.warning("No valid data after initial processing of tickers. Cannot compute portfolio metrics.")
              return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
-        # Combine into a single DataFrame aligned by date
-        combined_df = pd.concat(processed_dfs, axis=1, keys=valid_tickers) # Use keys to create top level
+        # Combine FIRST
+        combined_df = pd.concat(processed_dfs, axis=1, keys=valid_tickers)
         combined_df.index = pd.to_datetime(combined_df.index)
         combined_df = combined_df.sort_index()
 
-        # --- Calculate returns and signals AFTER combining ---
+        # Calculate AFTER combining
         close_df = combined_df.xs('close', level=1, axis=1)
         signal_df = combined_df.xs('signal', level=1, axis=1)
-
-        # Calculate daily returns for all tickers simultaneously
         returns_df = close_df.pct_change() # First row will be NaN
-
-        # Calculate previous day's signal for all tickers simultaneously
         signals_prev_df = signal_df.shift(1) # First row will be NaN
 
-        # --- 2. Calculate Portfolio Returns ---
-        portfolio_returns = pd.Series(index=returns_df.index, dtype=float) # Initialize empty Series
+        portfolio_returns = pd.Series(index=returns_df.index, dtype=float)
 
         if allocation_rule == 'equal_weight_active':
-            # Count non-zero signals per day (handle potential NaNs from shift)
-            active_signals_count = (signals_prev_df.fillna(0) != 0).sum(axis=1) # Treat NaN signal as 0 for counting
-
-            # Calculate weights: 1/N for active signals, 0 otherwise
-            # Make sure weights df has same index/columns as signals_prev_df
+            active_signals_count = (signals_prev_df.fillna(0) != 0).sum(axis=1)
             weights = pd.DataFrame(0.0, index=signals_prev_df.index, columns=signals_prev_df.columns)
-
-            # Iterate through rows to calculate weights safely
             for date, count in active_signals_count.items():
                  if count > 0:
-                      # Get the signals for this date (fill NaN with 0)
                       signals_on_date = signals_prev_df.loc[date].fillna(0)
-                      # Assign weight only where signal is non-zero
                       non_zero_mask = signals_on_date != 0
                       weights.loc[date, non_zero_mask] = signals_on_date[non_zero_mask] / count
 
+            # --- DEBUGGING PRINTS ---
+            print("\n--- Debugging Portfolio Calculation ---")
+            print("Shape of returns_df:", returns_df.shape)
+            print("Head of returns_df:\n", returns_df.head())
+            print("Tail of returns_df:\n", returns_df.tail())
+            print("\nShape of weights:", weights.shape)
+            print("Head of weights:\n", weights.head())
+            print("Tail of weights:\n", weights.tail())
 
-            # Calculate daily portfolio return: sum(weight * return)
-            # Ensure alignment and handle potential NaNs by treating them as zero contribution
-            # Both weights and returns_df should now align correctly on DatetimeIndex and ticker columns
-            portfolio_returns = (weights * returns_df).sum(axis=1, skipna=True)
+            # Calculate weighted returns (intermediate step)
+            weighted_returns = weights * returns_df
+            print("\nShape of weighted_returns:", weighted_returns.shape)
+            print("Head of weighted_returns:\n", weighted_returns.head())
+            print("Tail of weighted_returns:\n", weighted_returns.tail())
+            print("Any NaNs in weighted_returns sum (axis=1)?", weighted_returns.sum(axis=1).isna().any())
+            print("--- End Debugging Prints ---")
+
+            # Calculate final portfolio return series
+            portfolio_returns = weighted_returns.sum(axis=1, skipna=True)
 
         else:
             logger.error(f"Unsupported allocation_rule: {allocation_rule}")
             return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
-        # --- CRITICAL: Drop initial NaNs introduced by pct_change/shift ---
-        # This ensures we only feed valid return numbers to the metrics calculation
+        # Drop leading NaNs from pct_change/shift
         portfolio_returns = portfolio_returns.dropna()
 
-        # Check if empty after dropna
         if portfolio_returns.empty:
              logger.warning("Portfolio returns series is empty after dropping initial NaNs. Cannot compute metrics.")
              return {**{k: 0.0 for k in PerformanceEvaluator._get_metric_names()}, 'signal_accuracy': 0.0}
 
+        print("\n--- Final Valid Portfolio Returns Series ---")
+        print("Head:\n", portfolio_returns.head())
+        print("Tail:\n", portfolio_returns.tail())
+        print(f"Length: {len(portfolio_returns)}, Type: {type(portfolio_returns)}, Dtype: {portfolio_returns.dtype}, IndexType: {type(portfolio_returns.index)}")
+        print("--- End Final Portfolio Returns Series ---")
 
-        # Print the valid portfolio returns series for debugging
-        print("--- Valid Portfolio Returns Series ---")
-        print(portfolio_returns)
-        print(f"Length: {len(portfolio_returns)}, Type: {type(portfolio_returns)}, Dtype: {portfolio_returns.dtype}")
-        print("--- End Portfolio Returns Series ---")
-
-
-        # --- 3. Calculate Standard Metrics on Portfolio Returns ---
-        # Now portfolio_returns should be a clean Series
+        # Calculate metrics
         metrics = PerformanceEvaluator._calculate_metrics_from_returns(portfolio_returns, annualization_factor)
 
-        # --- 4. Calculate Signal Accuracy ---
+        # Calculate Signal Accuracy for Multi-Ticker
         correct_signals = 0
         total_non_zero_signals = 0
-
-        # Iterate through days and tickers where we have both signal_prev and return
-        # Use the PRE-dropna indexes/columns for this comparison
         common_index = signals_prev_df.index.intersection(returns_df.index)
         valid_signals_prev = signals_prev_df.loc[common_index]
         valid_returns = returns_df.loc[common_index]
 
         for date in common_index:
-             for ticker in valid_signals_prev.columns: # Iterate through ticker columns
+             for ticker in valid_signals_prev.columns:
                  signal_prev = valid_signals_prev.loc[date, ticker]
                  ret = valid_returns.loc[date, ticker]
-
-                 # Check validity *before* comparison
                  if pd.notna(signal_prev) and pd.notna(ret) and signal_prev != 0:
                      total_non_zero_signals += 1
-                     # Check if signal sign matches return sign (treat 0 return as neutral/incorrect)
-                     if np.sign(signal_prev) == np.sign(ret) and ret != 0: # Compare prev signal with current return
+                     if np.sign(signal_prev) == np.sign(ret) and ret != 0:
                          correct_signals += 1
 
         signal_accuracy = (correct_signals / total_non_zero_signals) if total_non_zero_signals > 0 else 0.0
-        metrics['signal_accuracy'] = signal_accuracy # Add to metrics dict
+        metrics['signal_accuracy'] = signal_accuracy
 
-        # Log metrics to MLflow if a run is active
         if mlflow.active_run():
-            # Add prefix to distinguish these portfolio metrics
             mlflow.log_metrics({f"portfolio_{k}": v for k, v in metrics.items() if pd.notna(v)})
 
         return metrics
