@@ -45,7 +45,7 @@ Usage:
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 # Initialize module logger
 logger = logging.getLogger(__name__)
@@ -128,298 +128,315 @@ class RiskManager:
                     f"Slip={slippage_pct:.3%}, Cost={transaction_cost_pct:.3%}")
 
 
-    def apply(self, signals_df: pd.DataFrame, initial_position: int = 0) -> pd.DataFrame:
-        """
-        Applies risk management rules to the signals DataFrame and computes results.
+    def _apply_logic_single_ticker(self, df_single: pd.DataFrame, initial_position: int) -> pd.DataFrame:
+        """Internal method with core RM logic for a single ticker."""
 
-        Processes the input DataFrame (which must contain 'signal', 'high', 'low', 'close'
-        columns indexed by datetime) to determine trade entries, exits based on stop-loss,
-        take-profit, trailing stops, and signal changes, while accounting for simulated
-        slippage and transaction costs.
+        # Minimal Check within the core logic (as requested)
+        if not isinstance(df_single.index, pd.DatetimeIndex):
+             # This ideally should be caught before calling this internal method
+             logger.error(f"Internal RM logic received non-DatetimeIndex: {type(df_single.index)}. Returning input.")
+             # Add error columns to signal failure
+             df_single['position'] = initial_position
+             df_single['return'] = 0.0
+             df_single['cumulative_return'] = 0.0
+             df_single['exit_type'] = 'error_bad_index_internal'
+             return df_single
 
-        Args:
-            signals_df (pd.DataFrame): DataFrame indexed by date/time, containing at least:
-                - 'signal': The raw trading signal (-1 for short, 0 for hold/exit, 1 for long).
-                - 'close': The closing price for the period.
-                - 'high': The highest price reached during the period.
-                - 'low': The lowest price reached during the period.
-                It's assumed the signal for time 't' is generated based on data up to 't-1'
-                and dictates the target position held during period 't'.
-            initial_position (int): The starting position before the first signal in the
-                                    DataFrame (0, 1, or -1). Default is 0.
-
-        Returns:
-            pd.DataFrame: A DataFrame with the original columns plus:
-                - 'position': The risk-managed position held at the end of each period
-                              (1 for long, -1 for short, 0 for flat). This reflects exits.
-                - 'return': The realized fractional return for a trade if an exit occurred
-                            during the period, otherwise 0. Calculated based on entry and
-                            exit prices including costs/slippage.
-                - 'cumulative_return': The cumulative fractional return based on the
-                                       compounded returns of closed trades. Starts at 0.
-                - 'exit_type': A string indicating the reason for an exit if one occurred:
-                               'stop_loss', 'take_profit', 'trailing_stop', 'signal_exit',
-                               or 'none'.
-
-        Raises:
-            ValueError: If required columns are missing from `signals_df`.
-            TypeError: If `signals_df` index is not a DatetimeIndex.
-        """
-        required_cols = ['signal', 'close', 'high', 'low']
-        if not all(col in signals_df.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in signals_df.columns]
-            raise ValueError(f"Input DataFrame is missing required columns: {missing}")
-
-        if not isinstance(signals_df.index, pd.DatetimeIndex):
-             raise TypeError("Input DataFrame index must be a DatetimeIndex.")
-
-        if signals_df.empty:
-            logger.warning("Input DataFrame is empty. Returning empty DataFrame.")
-            # Define expected output columns for an empty frame
-            output_cols = list(signals_df.columns) + ['position', 'return', 'cumulative_return', 'exit_type']
-            return pd.DataFrame(columns=output_cols, index=signals_df.index)
-
-        df = signals_df.copy()
+        # --- Start of calculation block (virtually identical to original apply) ---
+        df = df_single.copy() # Operate on copy
         epsilon = 1e-9 # Small number to prevent division by zero
 
         # --- 1. Determine Intended Position & Entries ---
-        # 'raw_position' represents the target position based *only* on the signal, before risk exits.
-        # A signal=0 implies exiting any existing position.
         df['raw_position'] = df['signal'].replace(0, np.nan).ffill().fillna(initial_position)
-        # If signal is 0, raw_position should be 0, overriding ffill.
         df.loc[df['signal'] == 0, 'raw_position'] = 0
-
-        # Identify rows where a new trade is entered (position changes from 0 or reverses).
-        # Shift raw_position to compare current state with the previous state.
         prev_raw_position = df['raw_position'].shift(1).fillna(initial_position)
         entry_mask = (
-            (prev_raw_position == 0) & (df['raw_position'] != 0) |  # Entry from flat
-            (prev_raw_position * df['raw_position'] < 0)            # Reversal (e.g., 1 to -1)
+            (prev_raw_position == 0) & (df['raw_position'] != 0) |
+            (prev_raw_position * df['raw_position'] < 0)
         )
 
         # --- 2. Calculate Entry Price (with Costs/Slippage) ---
         df['entry_price'] = np.nan
-        # Apply entry cost factor: add for long, subtract for short
         df.loc[entry_mask, 'entry_price'] = df['close'] * (1 + df['raw_position'] * self._entry_cost_factor)
-
-        # Handle initial state if starting with a position
         if initial_position != 0 and len(df) > 0:
-             # Check if the first row wasn't already marked as an entry AND has a position
              if not entry_mask.iloc[0] and df.iloc[0]['raw_position'] != 0:
-                  # Assume entry happened just before the start based on initial_position and first close
                   df.iat[0, df.columns.get_loc('entry_price')] = df.iloc[0]['close'] * (1 + initial_position * self._entry_cost_factor)
-                  # Mark the first row as needing an entry price ffill if it wasn't an entry signal itself
-                  if pd.isna(df.iloc[0]['entry_price']): # Redundant check? Maybe remove. Safety first.
+                  if pd.isna(df.iloc[0]['entry_price']):
                         df.iat[0, df.columns.get_loc('entry_price')] = df.iloc[0]['close'] * (1 + initial_position * self._entry_cost_factor)
-
-
-        # Forward fill the entry price; it remains constant until the next entry event.
         df['entry_price'] = df['entry_price'].ffill()
-        # If there's still no entry price (e.g., starts flat, never enters), fill with NaN or 0? NaN is safer.
-        # df['entry_price'] = df['entry_price'].fillna(0) # Avoid if possible
 
         # --- 3. Calculate Stop-Loss and Take-Profit Levels ---
         df['stop_level'] = np.nan
         df['target_level'] = np.nan
-
-        # For long positions (raw_position == 1):
         long_mask = df['raw_position'] == 1
-        # Stop is below entry
-        df.loc[long_mask, 'stop_level'] = df['entry_price'] * (1 - self.stop_loss_pct)
-        # Target is above entry
-        df.loc[long_mask, 'target_level'] = df['entry_price'] * (1 + self.take_profit_pct)
-
-        # For short positions (raw_position == -1):
         short_mask = df['raw_position'] == -1
-        # Stop is above entry
+        df.loc[long_mask, 'stop_level'] = df['entry_price'] * (1 - self.stop_loss_pct)
+        df.loc[long_mask, 'target_level'] = df['entry_price'] * (1 + self.take_profit_pct)
         df.loc[short_mask, 'stop_level'] = df['entry_price'] * (1 + self.stop_loss_pct)
-        # Target is below entry
         df.loc[short_mask, 'target_level'] = df['entry_price'] * (1 - self.take_profit_pct)
 
-
         # --- 4. Calculate Trailing Stop-Loss Level (if enabled) ---
+        trailing_stop_exit = pd.Series(False, index=df.index) # <<< Initialize default
         if self.trailing_stop_pct > 0:
-            # Identify unique trades to track peaks/troughs within each trade.
-            # An 'entry_flag' marks the start of each new trade (including reversals).
             df['entry_flag'] = entry_mask
-            # If starting with an initial position, the first row is the effective start of that trade.
             if initial_position != 0 and len(df) > 0 and not df.iloc[0]['entry_flag']:
                  df.iat[0, df.columns.get_loc('entry_flag')] = True
-
-            # Assign a unique ID to each trade sequence. ID increases at each entry flag.
-            # Only assign IDs where a position is held (raw_position != 0)
             df['trade_id'] = np.where(df['raw_position'] != 0, df['entry_flag'].cumsum(), np.nan)
-            # Forward fill trade_id so all bars within a trade have the same ID.
             df['trade_id'] = df['trade_id'].ffill()
-
-            # Calculate trailing stop levels dynamically within each trade group.
             df['trailing_stop_level'] = np.nan
-
-            # For long trades: track cumulative max high since entry. Stop is max_high * (1 - TSL%).
-            # Group by trade_id first, then calculate cummax within each group.
             if long_mask.any(): # Avoid groupby if no long positions exist
-                df['cummax_high'] = df.loc[long_mask].groupby('trade_id')['high'].cummax()
+                # NO Groupby needed here as we are processing a single ticker's data
+                df['cummax_high'] = df.loc[long_mask,'high'].cummax() # Use high directly
                 df.loc[long_mask, 'trailing_stop_level'] = df['cummax_high'] * (1 - self.trailing_stop_pct)
-
-            # For short trades: track cumulative min low since entry. Stop is min_low * (1 + TSL%).
             if short_mask.any(): # Avoid groupby if no short positions exist
-                 df['cummin_low'] = df.loc[short_mask].groupby('trade_id')['low'].cummin()
+                 df['cummin_low'] = df.loc[short_mask,'low'].cummin() # Use low directly
                  df.loc[short_mask, 'trailing_stop_level'] = df['cummin_low'] * (1 + self.trailing_stop_pct)
-
-            # Determine trailing stop exit condition using daily low/high.
-            # Long exit: low <= trailing_stop_level
-            # Short exit: high >= trailing_stop_level
             trailing_stop_exit = (
                 (long_mask & (df['low'] <= df['trailing_stop_level'])) |
                 (short_mask & (df['high'] >= df['trailing_stop_level']))
-            )
-            # Fill NaN TSL exits with False (can happen if a position exists but TSL isn't calculated yet)
-            trailing_stop_exit = trailing_stop_exit.fillna(False)
-        else:
-            # If TSL is disabled, create a Series of False for the exit condition.
-            trailing_stop_exit = pd.Series(False, index=df.index)
-
+            ).fillna(False) # <<< Apply fillna here
+        # else: # No need for else block if initialized above
+            # trailing_stop_exit = pd.Series(False, index=df.index)
 
         # --- 5. Identify All Exit Conditions ---
-        # Note: We check against daily 'low' for long exits and 'high' for short exits,
-        # simulating that the level could be hit at any point during the day.
-
-        # Fixed Stop Loss Exit:
         stop_exit = (
             (long_mask & (df['low'] <= df['stop_level'])) |
             (short_mask & (df['high'] >= df['stop_level']))
-        ).fillna(False) # FillNa in case levels are NaN early on
-
-        # Take Profit Exit:
+        ).fillna(False)
         target_exit = (
             (long_mask & (df['high'] >= df['target_level'])) |
             (short_mask & (df['low'] <= df['target_level']))
-        ).fillna(False) # FillNa in case levels are NaN early on
-
-        # Signal-Based Exit:
-        # Exit if the previous position was non-zero AND the current signal is zero (exit)
-        # OR the current signal is the reverse of the previous position.
-        # Use prev_raw_position defined earlier.
+        ).fillna(False)
         signal_exit_condition = (df['signal'] == 0) | (df['signal'] == -prev_raw_position)
         signal_exit = (prev_raw_position != 0) & signal_exit_condition
         signal_exit = signal_exit.fillna(False)
 
-
         # --- 6. Determine Final Exit Trigger and Type ---
-        # Combine all exit conditions. The order in np.select matters if multiple
-        # conditions are met on the same day. Priority: Trailing > Stop > Target > Signal.
-        # This means if low hits both TSL and SL, TSL exit is recorded.
         exit_conditions = [trailing_stop_exit, stop_exit, target_exit, signal_exit]
         exit_labels = ['trailing_stop', 'stop_loss', 'take_profit', 'signal_exit']
-
-        # The combined mask where *any* exit occurs.
-        # Note: An entry for a reversal (e.g., 1 to -1) implicitly closes the '1' position.
-        # The 'exit_mask' primarily identifies stops, targets, and signal-driven closures to flat (0).
-        # The `position` update later handles the flattening.
-        # We prioritize explicit risk exits over signal exits if they occur simultaneously.
         df['exit_type'] = np.select(exit_conditions, exit_labels, default='none')
-
-        # Update the exit mask to reflect the prioritized decision.
         exit_mask = (df['exit_type'] != 'none')
 
-
         # --- 7. Calculate Exit Price (with Costs/Slippage) ---
-        # Determine the price at which the exit is simulated to occur.
-
-        # Define prices associated with each exit type:
-        # - Stop Loss: Exit at the stop_level.
-        # - Take Profit: Exit at the target_level.
-        # - Trailing Stop: Exit at the trailing_stop_level (if enabled).
-        # - Signal Exit: Exit at the 'close' price of the day the signal changes.
-
-        # Apply exit cost factor: subtract for long, add for short cover.
         exit_price_conditions = [
             df['exit_type'] == 'trailing_stop', # Check TSL first due to priority
             df['exit_type'] == 'stop_loss',
             df['exit_type'] == 'take_profit',
             df['exit_type'] == 'signal_exit'
         ]
-
         exit_price_choices = []
-        # Trailing Stop Exit Price (use trailing_stop_level)
         if self.trailing_stop_pct > 0:
             exit_price_choices.append(
                 df['trailing_stop_level'] * (1 - prev_raw_position * self._exit_cost_factor)
             )
         else:
              exit_price_choices.append(np.nan) # Placeholder if TSL disabled
-
-        # Stop Loss Exit Price (use stop_level)
         exit_price_choices.append(
             df['stop_level'] * (1 - prev_raw_position * self._exit_cost_factor)
         )
-        # Take Profit Exit Price (use target_level)
         exit_price_choices.append(
             df['target_level'] * (1 - prev_raw_position * self._exit_cost_factor)
         )
-        # Signal Exit Price (use close)
         exit_price_choices.append(
             df['close'] * (1 - prev_raw_position * self._exit_cost_factor)
         )
-
         df['exit_price'] = np.select(exit_price_conditions, exit_price_choices, default=np.nan)
 
-
         # --- 8. Calculate Realized Return on Exit ---
-        # Return is calculated only when an exit event occurs (`exit_mask` is True).
-        # Add epsilon to denominators for numerical stability.
         trade_return_long = (df['exit_price'] / (df['entry_price'] + epsilon)) - 1
         trade_return_short = (df['entry_price'] / (df['exit_price'] + epsilon)) - 1
-
-        # Use prev_raw_position to determine if the exited trade was long or short.
-        df['return'] = np.where(
+        raw_return = np.where(
             exit_mask & (prev_raw_position == 1), trade_return_long,
-            np.where(exit_mask & (prev_raw_position == -1), trade_return_short, 0) # Return is 0 if no exit
+            np.where(exit_mask & (prev_raw_position == -1), trade_return_short, 0.0) # Use 0.0 for float consistency
         )
-        # Ensure no NaNs in return column if exit/entry prices were NaN
-        df['return'] = df['return'].fillna(0)
 
+        # Now assign the numpy array to the DataFrame column
+        df['return'] = raw_return
+        # Then apply .fillna(0) to the *Pandas Series* df['return']
+        df['return'] = df['return'].fillna(0.0)
 
         # --- 9. Determine Final Position ---
-        # Start with the raw intended position for the day.
         df['position'] = df['raw_position']
-        # If an exit occurred *based on the previous day's position state*, set current position to 0.
         df.loc[exit_mask, 'position'] = 0
-        # Ensure position is integer type
         df['position'] = df['position'].astype(int)
 
-
         # --- 10. Calculate Cumulative Return ---
-        # Use a multiplier approach for compounding. Multiplier is 1 + return for the trade.
-        # Multiplier = ExitPrice / EntryPrice (for long)
-        # Multiplier = EntryPrice / ExitPrice (for short)
-        # Multiplier = 1 if no exit occurred.
         trade_multiplier = np.where(
             exit_mask & (prev_raw_position == 1), df['exit_price'] / (df['entry_price'] + epsilon),
             np.where(exit_mask & (prev_raw_position == -1), df['entry_price'] / (df['exit_price'] + epsilon), 1)
         )
-        # Handle potential NaN multipliers if prices were NaN
         trade_multiplier = np.nan_to_num(trade_multiplier, nan=1.0) # Replace NaN with 1 (no change)
-        # Ensure multipliers are not zero or negative if prices were bad
         trade_multiplier = np.maximum(epsilon, trade_multiplier)
-
-        # Calculate cumulative product of multipliers, then subtract 1 for return format.
         df['cumulative_return'] = trade_multiplier.cumprod() - 1
-
 
         # --- 11. Clean Up Temporary Columns ---
         cols_to_drop = ['raw_position', 'entry_price', 'stop_level', 'target_level', 'exit_price']
         if self.trailing_stop_pct > 0:
-            # Only drop TSL helper columns if TSL was enabled
             cols_to_drop.extend(['entry_flag', 'trade_id', 'cummax_high', 'cummin_low', 'trailing_stop_level'])
-        # Use errors='ignore' in case some columns didn't exist (e.g., cummax_high if no long trades)
         result_df = df.drop(columns=cols_to_drop, errors='ignore')
 
-        # Select and order final output columns
-        final_columns = list(signals_df.columns) + ['position', 'return', 'cumulative_return', 'exit_type']
-        # Ensure all expected columns are present, even if originals were dropped
+        # --- Select and order final output columns --- # <<< Slightly modified this part for clarity
+        # Original columns from the input group + the RM output columns
+        output_cols = ['position', 'return', 'cumulative_return', 'exit_type']
+        # Combine original columns (excluding any output cols it might already have) and output cols
+        original_cols_filtered = [col for col in df_single.columns if col not in output_cols]
+        final_columns = original_cols_filtered + output_cols
+
+        # Ensure all expected final columns are present
         for col in final_columns:
              if col not in result_df.columns:
-                  result_df[col] = np.nan # Add missing column back if needed
+                  result_df[col] = np.nan # Add missing column back if needed (e.g., if TSL disabled)
 
-        return result_df[final_columns]
+        return result_df[final_columns] # Return with consistent column order
+    
+    def apply(self,
+              signals_df: pd.DataFrame,
+              initial_position: Union[int, Dict[str, int]] = 0) -> pd.DataFrame:
+        """
+        Applies risk management rules to the signals DataFrame. Handles both
+        single-ticker (DatetimeIndex) and multi-ticker (MultiIndex or 'ticker' column) inputs.
+
+        Args:
+            signals_df (pd.DataFrame): DataFrame indexed by date/time (single ticker)
+                or MultiIndex ['ticker', 'date'] (multi-ticker), or containing a
+                'ticker' column. Must contain 'signal', 'close', 'high', 'low'.
+            initial_position (Union[int, Dict[str, int]]): The starting position.
+                If int, applied to all tickers. If dict, maps ticker to its initial position. Default is 0.
+
+        Returns:
+            pd.DataFrame: A DataFrame with the original columns plus:
+                - 'position': The risk-managed position held at the end of each period.
+                - 'return': The realized fractional return for a trade if an exit occurred.
+                - 'cumulative_return': The cumulative fractional return based on closed trades.
+                - 'exit_type': A string indicating the reason for an exit.
+                The index structure (DatetimeIndex or MultiIndex) of the input is preserved.
+
+        Raises:
+            ValueError: If required columns are missing or input format is unusable.
+            TypeError: If initial_position type is invalid.
+        """
+        required_cols = ['signal', 'close', 'high', 'low']
+        if not all(col in signals_df.columns for col in required_cols):
+            missing = [col for col in required_cols if col not in signals_df.columns]
+            raise ValueError(f"Input DataFrame is missing required columns: {missing}")
+
+        if signals_df.empty:
+            logger.warning("Input DataFrame to RiskManager is empty. Returning empty DataFrame.")
+            # Define expected output columns for an empty frame
+            output_cols = list(signals_df.columns) + ['position', 'return', 'cumulative_return', 'exit_type']
+            return pd.DataFrame(columns=output_cols, index=signals_df.index)
+
+        # --- Detect Input Format ---
+        is_multi_index = isinstance(signals_df.index, pd.MultiIndex)
+        has_ticker_col = 'ticker' in signals_df.columns
+
+        # --- Dispatch based on Format ---
+        if is_multi_index or has_ticker_col:
+            # --- Multi-Ticker Processing ---
+            logger.debug("RiskManager applying to multi-ticker input.")
+            df_multi = signals_df.copy() # Work on a copy
+
+            # Determine grouping factor and if index needs temporary reset
+            if is_multi_index:
+                # Assume 'ticker' is the first level name, or index 0 if unnamed
+                ticker_level = df_multi.index.names[0] if df_multi.index.names[0] else 0
+                group_by_factor = df_multi.index.get_level_values(ticker_level)
+                input_index = df_multi.index # Preserve original index
+                # We need DatetimeIndex within the apply function, so reset index before groupby
+                df_multi = df_multi.reset_index()
+                # Find the date column name (likely 'date' or level_1 if unnamed)
+                date_col_name = input_index.names[1] if input_index.names[1] else f"level_{1}"
+                if date_col_name not in df_multi.columns:
+                     raise ValueError(f"Could not find date column '{date_col_name}' after resetting MultiIndex.")
+                df_multi = df_multi.set_index(date_col_name) # Set date as index for processing
+                if not isinstance(df_multi.index, pd.DatetimeIndex):
+                     df_multi.index = pd.to_datetime(df_multi.index) # Ensure it's datetime
+
+                group_col_name = input_index.names[0] if input_index.names[0] else f"level_{0}" # Get ticker col name
+                if group_col_name not in df_multi.columns:
+                     raise ValueError(f"Could not find ticker column '{group_col_name}' after resetting MultiIndex.")
+
+            elif has_ticker_col:
+                group_col_name = 'ticker'
+                group_by_factor = df_multi[group_col_name]
+                # Ensure index is DatetimeIndex
+                if not isinstance(df_multi.index, pd.DatetimeIndex):
+                     logger.warning(f"Multi-ticker input with 'ticker' column has non-DatetimeIndex: {type(df_multi.index)}. Assuming it contains dates.")
+                     try:
+                         df_multi.index = pd.to_datetime(df_multi.index)
+                         if not isinstance(df_multi.index, pd.DatetimeIndex): raise ValueError("Conv failed")
+                     except Exception as e:
+                         raise TypeError(f"Failed to convert index to DatetimeIndex for 'ticker' column input: {e}")
+                input_index = df_multi.index # Preserve original index
+            else:
+                 # This case should technically not be reached due to initial check
+                 raise ValueError("Inconsistent state in RiskManager input format detection.")
+
+            # Prepare initial positions dictionary
+            if isinstance(initial_position, int):
+                 unique_tickers = group_by_factor.unique()
+                 initial_positions_dict = {ticker: initial_position for ticker in unique_tickers}
+            elif isinstance(initial_position, dict):
+                 initial_positions_dict = initial_position
+            else:
+                 raise TypeError("initial_position must be an int or a Dict[str, int]")
+
+            # Define the function to apply to each group (which now has DatetimeIndex)
+            def apply_logic_wrapper(group_df):
+                # Get the ticker name (consistent across the group)
+                ticker_name = group_df[group_col_name].iloc[0]
+                ticker_initial_pos = initial_positions_dict.get(ticker_name, 0)
+                # Call the core logic function
+                # Drop the group_col_name before passing if it wasn't part of original MultiIndex levels
+                group_to_process = group_df.drop(columns=[group_col_name], errors='ignore')
+                return self._apply_logic_single_ticker(group_to_process, ticker_initial_pos)
+
+            # Apply the wrapper using groupby on the ticker column
+            all_results = df_multi.groupby(group_col_name, group_keys=True).apply(apply_logic_wrapper) # group_keys=True is default & helpful
+
+            # --- Reconstruct original index if needed ---
+            # The result 'all_results' will have a MultiIndex [ticker, date]
+            # If the original input was MultiIndex, this is likely the desired output format.
+            if is_multi_index:
+                 # Ensure the names of the output index match the input index names
+                 try:
+                    all_results.index.names = input_index.names
+                 except Exception as name_err:
+                      logger.warning(f"Could not rename output MultiIndex levels: {name_err}")
+                 result_df = all_results
+            elif has_ticker_col:
+                 # If original had 'ticker' column, reset index to get 'ticker' back as column
+                 # and set the original DatetimeIndex back
+                 ticker_index_name = all_results.index.names[0] # Name of the ticker level
+                 result_df = all_results.reset_index()
+                 # Find the date column name (likely index name from wrapper or default 'date')
+                 date_col_from_index = all_results.index.names[1] if all_results.index.names[1] else 'date'
+                 result_df = result_df.rename(columns={ticker_index_name: 'ticker', date_col_from_index: 'date_col_temp'})
+                 result_df = result_df.set_index(pd.to_datetime(result_df['date_col_temp']))
+                 result_df.index.name = input_index.name # Restore original index name
+                 result_df = result_df.drop(columns=['date_col_temp'])
+                 # Reorder columns potentially? For now, leave as is.
+            else:
+                 # Fallback - should not happen
+                 result_df = all_results
+
+        else:
+            # --- Single-Ticker Processing ---
+            logger.debug("RiskManager applying to single-ticker input.")
+            if not isinstance(signals_df.index, pd.DatetimeIndex):
+                 # This check is redundant if the multi-ticker logic is correct, but keep for safety
+                 raise TypeError("Single-ticker input DataFrame index must be a DatetimeIndex.")
+
+            # Handle initial position
+            if isinstance(initial_position, dict):
+                 logger.warning("Initial position dict provided for single ticker. Using 0.")
+                 single_ticker_initial_pos = 0
+            elif isinstance(initial_position, int):
+                 single_ticker_initial_pos = initial_position
+            else:
+                 raise TypeError("initial_position must be int for single ticker input")
+
+            # Directly call the core logic
+            result_df = self._apply_logic_single_ticker(signals_df.copy(), single_ticker_initial_pos)
+
+        return result_df
