@@ -271,30 +271,60 @@ awesome_oscillator_strat_search_space = {
     'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.1),   # Trailing stop percentage
 }
 
+# coppock_curve_strat_search_space = {
+#     # ROC parameters
+#     'roc1_months': hp.quniform('roc1_months', 10, 18, 1),  # Traditional is 14
+#     'roc2_months': hp.quniform('roc2_months', 8, 14, 1),   # Traditional is 11
+    
+#     # WMA lookback parameter
+#     'wma_lookback': hp.quniform('wma_lookback', 6, 14, 1), # In months (default is 10)
+    
+#     # Signal generation parameters
+#     'method': hp.choice('method', ['zero_crossing', 'directional']),
+#     'long_only': hp.choice('long_only', [True, False]),
+    
+#     # For directional method
+#     'sustain_days': hp.quniform('sustain_days', 3, 7, 1),
+#     'trend_strength_threshold': hp.uniform('trend_strength_threshold', 0.6, 0.9),
+    
+#     # Strength calculation
+#     'strength_window': hp.quniform('strength_window', 252, 756, 63),  # ~1-3 years in trading days
+#     'normalize_strength': hp.choice('normalize_strength', [True, False]),
+    
+#     # Risk management parameters
+#     'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.12),         # Higher for more volatile markets
+#     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.25),     # Adjusted for Indian market volatility
+#     'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),   # Trailing stop percentage
+# }
+
+
 coppock_curve_strat_search_space = {
-    # ROC parameters
-    'roc1_months': hp.quniform('roc1_months', 10, 18, 1),  # Traditional is 14
-    'roc2_months': hp.quniform('roc2_months', 8, 14, 1),   # Traditional is 11
-    
-    # WMA lookback parameter
-    'wma_lookback': hp.quniform('wma_lookback', 6, 14, 1), # In months (default is 10)
-    
-    # Signal generation parameters
+    'roc1_months': hp.quniform('roc1_months', 2, 8, 1),  # Shorter range (e.g., 2-8 months => ~42-168 days)
+    'roc2_months': hp.quniform('roc2_months', 1, 6, 1),  # Shorter range (e.g., 1-6 months => ~21-126 days) ensuring roc2 < roc1 often
+
+    'wma_lookback': hp.quniform('wma_lookback', 1, 5, 1), # Shorter range (e.g., 1-5 months => ~21-105 days)
+
     'method': hp.choice('method', ['zero_crossing', 'directional']),
-    'long_only': hp.choice('long_only', [True, False]),
-    
-    # For directional method
-    'sustain_days': hp.quniform('sustain_days', 3, 7, 1),
-    'trend_strength_threshold': hp.uniform('trend_strength_threshold', 0.6, 0.9),
-    
-    # Strength calculation
-    'strength_window': hp.quniform('strength_window', 252, 756, 63),  # ~1-3 years in trading days
+    'long_only': hp.choice('long_only', [True, False]), # Test both long-only and long/short
+
+    'zc_require_prior_state': hp.choice('zc_require_prior_state', [True, False]), # NEW: Test strict vs simple zero cross
+    'zc_sustain_days': hp.quniform('zc_sustain_days', 2, 5, 1), # NEW: Lookback for prior state (if zc_require_prior_state=True)
+
+    'sustain_days': hp.quniform('sustain_days', 2, 5, 1), # How many days of sustained CC direction needed (reduced upper bound slightly)
+
+    'dir_require_prior_trend': hp.choice('dir_require_prior_trend', [True, False]), # NEW: Test if prior counter-trend is required
+
+    'trend_strength_threshold': hp.uniform('trend_strength_threshold', 0.1, 0.7), # Widen range significantly downwards (if dir_require_prior_trend=True)
+
+    'strength_window': hp.quniform('strength_window', 252, 504, 63),  # ~1-2 years in trading days (reduced upper bound slightly)
     'normalize_strength': hp.choice('normalize_strength', [True, False]),
-    
-    # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.12),         # Higher for more volatile markets
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.25),     # Adjusted for Indian market volatility
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),   # Trailing stop percentage
+
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.15), # Wider range for SL, acknowledging potential volatility
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.30), # Wider range for TP
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.02, 0.08) # Enable TSL within a range if chosen
+    ]),
 }
 
 know_sure_thing_strat_search_space = {

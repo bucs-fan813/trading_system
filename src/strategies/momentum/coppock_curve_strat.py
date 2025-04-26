@@ -9,431 +9,510 @@ from src.database.config import DatabaseConfig
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
 
+logger = logging.getLogger(__name__)
+
 class CoppockCurveStrategy(BaseStrategy):
     """
-    CoppockCurveStrategy implements the Coppock Curve trading strategy with integrated risk management.
-    
-    Mathematical Explanation:
-        1. ROC Calculation:
-           - ROC1 = 100 * ((Close / Close_shifted_by_roc1_days) - 1)
-           - ROC2 = 100 * ((Close / Close_shifted_by_roc2_days) - 1)
-           where roc1_days = roc1_months * 21 and roc2_days = roc2_months * 21.
-           
-        2. Combined ROC:
-           - CombinedROC = ROC1 + ROC2
-           
-        3. Smoothing:
-           - The CombinedROC is smoothed by calculating a weighted moving average (WMA) over a window 
-             of self.wma_lookback days. Weights increase linearly (1, 2, ..., N) where N = (wma_lookback / 21).
-           
-        4. Signal Generation:
-           - Zero-Crossing: A long signal (+1) is generated when the indicator, after a sustained negative regime (4 days),
-             crosses from below 0 to above 0. A short signal (-1) is triggered when the indicator, after a sustained positive regime,
-             turns negative. If long_only is set, short signals are clipped to 0.
-           - An auxiliary momentum strength is computed as the divergence of the Coppock Curve from its short-term (21-day) moving average,
-             optionally normalized to [-1, 1].
-             
-        5. Risk Management:
-           - The raw signals are adjusted for stop-loss, take-profit, slippage, and transaction costs via RiskManager.
-           - The adjusted risk-managed signal determines exit price, realized return (long: exit_price/entry_price - 1, short: entry_price/exit_price - 1),
-             and cumulative return.
-             
-        6. Vectorization and Multi-Ticker Support:
-           - The strategy supports processing a single ticker (string) or a list of tickers. In vectorized mode, all tickers are fetched
-             in one query and then grouped by ticker for independent processing.
-             
-    Args:
-        db_config (DatabaseConfig): Database configuration settings.
-        params (dict, optional): Dictionary containing strategy parameters:
-            - 'roc1_months': Months for first ROC (default: 14)
-            - 'roc2_months': Months for second ROC (default: 11)
-            - 'wma_lookback': Lookback window for WMA smoothing (default: 10, multiplied by 21 trading days)
-            - 'stop_loss_pct': Stop loss percentage (default: 0.05)
-            - 'take_profit_pct': Take profit percentage (default: 0.10)
-            - 'trailing_stop_pct': Trailing stop percentage (default: 0.0)
-            - 'slippage_pct': Slippage as a fraction (default: 0.001)
-            - 'transaction_cost_pct': Transaction cost as a fraction (default: 0.001)
-            - 'strength_window': Lookback window for momentum strength normalization (default: 504)
-            - 'normalize_strength': Flag to normalize momentum strength (default: True)
-            - 'method': Signal generation method: 'zero_crossing' or 'directional' (default: 'zero_crossing')
-            - 'long_only': If True, only long positions are allowed (default: True)
+    Implements the Coppock Curve momentum strategy with integrated risk management.
+
+    Strategy Logic:
+    1. Calculates two Rate-of-Change (ROC) indicators based on specified monthly lookbacks.
+    2. Sums the two ROC values to get a combined ROC.
+    3. Smooths the combined ROC using a Weighted Moving Average (WMA) with linearly increasing weights
+       over a specified lookback period. This smoothed value is the Coppock Curve (CC).
+    4. Generates raw trading signals based on the CC using one of two methods:
+        - 'zero_crossing': Buy (+1) when CC crosses above 0. Optionally requires CC to have been
+                           negative for 'zc_sustain_days' periods prior (default: 4).
+                           Sell (-1) when CC crosses below 0. Optionally requires CC to have been
+                           positive for 'zc_sustain_days' periods prior (default: 4).
+                           Controlled by 'zc_require_prior_state' parameter.
+        - 'directional': Buy (+1) on sustained upward CC movement ('sustain_days'). Optionally
+                         requires a confirmed prior downtrend ('dir_require_prior_trend',
+                         'trend_strength_threshold').
+                         Sell (-1) on sustained downward CC movement ('sustain_days'). Optionally
+                         requires a confirmed prior uptrend ('dir_require_prior_trend',
+                         'trend_strength_threshold').
+    5. Optionally restricts signals to long-only (clips -1 signals to 0).
+    6. Calculates signal strength based on the CC's divergence from its short-term moving average,
+       optionally normalized.
+    7. Integrates with the RiskManager component to apply stop-loss, take-profit, trailing stops,
+       slippage, and transaction costs to the raw signals, determining final positions and returns.
+
+    Output DataFrame includes:
+    - Price data (open, high, low, close)
+    - Coppock Curve indicator ('cc')
+    - Raw signal ('signal')
+    - Signal strength ('signal_strength')
+    - Risk-managed position ('position')
+    - Daily return of the asset ('daily_return')
+    - Strategy return based on daily return and prior day's position ('strategy_return')
+    - Risk-managed trade return ('rm_strategy_return')
+    - Risk-managed cumulative return ('rm_cumulative_return')
+    - Risk management exit reason ('rm_action')
     """
-    
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
+        """
+        Initialize the Coppock Curve Strategy.
+
+        Args:
+            db_config (DatabaseConfig): Database configuration settings.
+            params (Optional[Dict]): Strategy parameters dictionary. Expected keys:
+                - 'roc1_months' (int, default: 14): Lookback months for the first ROC.
+                - 'roc2_months' (int, default: 11): Lookback months for the second ROC.
+                - 'wma_lookback' (int, default: 10): Lookback months for WMA smoothing.
+                - 'method' (str, default: 'zero_crossing'): Signal generation method ('zero_crossing' or 'directional').
+                - 'long_only' (bool, default: True): If True, only long positions are taken.
+                - 'sustain_days' (int, default: 4): For 'directional' method, days of sustained movement.
+                - 'trend_strength_threshold' (float, default: 0.75): For 'directional' method, threshold for prior trend confirmation.
+                - 'strength_window' (int, default: 504): Lookback window (days) for strength normalization.
+                - 'normalize_strength' (bool, default: True): Whether to normalize signal strength.
+                - 'stop_loss_pct' (float, default: 0.05): Stop loss percentage.
+                - 'take_profit_pct' (float, default: 0.10): Take profit percentage.
+                - 'trailing_stop_pct' (float, default: 0.0): Trailing stop percentage (0 disables).
+                - 'slippage_pct' (float, default: 0.001): Slippage per transaction.
+                - 'transaction_cost_pct' (float, default: 0.001): Transaction cost per transaction.
+                - 'zc_require_prior_state' (bool, default: True): For 'zero_crossing' method, if True, requires CC
+                                                                to be below/above 0 for zc_sustain_days before crossing.
+                                                                If False, triggers on simple zero cross.
+                - 'zc_sustain_days' (int, default: 4): For 'zero_crossing' method, days CC must be below/above 0
+                                                      before a crossing signal (only used if zc_require_prior_state is True).
+                - 'dir_require_prior_trend' (bool, default: True): For 'directional' method, if True, requires the sustained
+                                                                 move to follow a confirmed counter-trend. If False,
+                                                                 only sustained direction is required.
+        """
+        default_params = {
+            'roc1_months': 14, 'roc2_months': 11, 'wma_lookback': 10,
+            'method': 'zero_crossing', 'long_only': True,
+            'sustain_days': 4, 'trend_strength_threshold': 0.75,
+            'strength_window': 504, 'normalize_strength': True,
+            'stop_loss_pct': 0.05, 'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0, 'slippage_pct': 0.001,
+            'transaction_cost_pct': 0.001,
+            'zc_require_prior_state': True,  # New parameter for zero_crossing strictness
+            'zc_sustain_days': 4, # Renamed from sustain_days used internally in zero_crossing logic previously
+            'dir_require_prior_trend': True # New parameter for directional strictness
+        }
+        # Ensure integer params from Hyperopt are correctly typed if passed as float
+        int_params_from_search = [
+            'roc1_months', 'roc2_months', 'wma_lookback', 'sustain_days',
+            'strength_window', 'zc_sustain_days'
+        ]
+
+        params = params or default_params
+        # Apply defaults for missing keys
+        for key, value in default_params.items():
+            params.setdefault(key, value)
+        # Ensure correct typing for integer params
+        for p_key in int_params_from_search:
+             if p_key in params:
+                  try:
+                       params[p_key] = int(params[p_key])
+                  except (ValueError, TypeError):
+                       logger.warning(f"Could not convert param '{p_key}' to int. Using default: {default_params[p_key]}")
+                       params[p_key] = int(default_params[p_key])
+
         super().__init__(db_config, params)
-        self._validate_params()
-        self._init_risk_params()
-        self._init_strength_params()
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # Strategy-specific parameters
+        self.roc1_months = max(1, params['roc1_months'])
+        self.roc2_months = max(1, params['roc2_months'])
+        self.wma_lookback_months = max(1, params['wma_lookback']) # Store the original month value
+        self.roc1_days = self.roc1_months * 21  # Approx trading days/month
+        self.roc2_days = self.roc2_months * 21
+        self.wma_lookback_days = self.wma_lookback_months * 21
+
+        self.method = params['method']
+        self.long_only = params['long_only']
+        self.sustain_days = params['sustain_days'] # For directional method
+        self.trend_strength_threshold = params['trend_strength_threshold'] # For directional method
+        self.strength_window = params['strength_window']
+        self.normalize_strength = params['normalize_strength']
+
+        # New parameters for signal generation flexibility
+        self.zc_require_prior_state = params['zc_require_prior_state']
+        self.zc_sustain_days = max(1, params['zc_sustain_days']) # Min 1 day for consistency check
+        self.dir_require_prior_trend = params['dir_require_prior_trend']
+
+        if min(self.roc1_days, self.roc2_days) <= self.wma_lookback_days:
+            self.logger.warning("ROC periods should ideally exceed the WMA window for standard Coppock interpretation.")
+
+        # Initialize RiskManager with parameters from the params dict
+        risk_params = {
+            'stop_loss_pct': params.get('stop_loss_pct', default_params['stop_loss_pct']),
+            'take_profit_pct': params.get('take_profit_pct', default_params['take_profit_pct']),
+            'trailing_stop_pct': params.get('trailing_stop_pct', default_params['trailing_stop_pct']),
+            'slippage_pct': params.get('slippage_pct', default_params['slippage_pct']),
+            'transaction_cost_pct': params.get('transaction_cost_pct', default_params['transaction_cost_pct'])
+        }
+        self.risk_manager = RiskManager(**risk_params)
 
     @staticmethod
     def generate_repeated_array(input_number: int) -> np.ndarray:
         """
-        Generate a 1D numpy array where an integer number is repeated 21 times, 
-        then the previous integer is repeated 21 times, and so on until 1 is repeated 21 times.
-        
+        Generate a 1D numpy array for WMA weights. The sequence goes from
+        input_number down to 1, with each number repeated 21 times.
+
+        Example: input_number=2 -> [2, 2, ..., 2, 1, 1, ..., 1] (each 21 times)
+
         Args:
-            input_number (int): Starting positive integer.
-            
+            input_number (int): The starting integer for the sequence (typically wma_lookback_months).
+
         Returns:
-            np.ndarray: Array of repeated sequences.
+            np.ndarray: Array of repeated integer sequences.
         """
         if not isinstance(input_number, int) or input_number <= 0:
-            raise ValueError("Input must be a positive integer.")
+            raise ValueError("Input must be a positive integer for weight generation.")
         repetitions = 21
         number_sequence = np.arange(input_number, 0, -1)
         repeated_array = np.repeat(number_sequence, repetitions)
         return repeated_array
 
-    def _validate_params(self):
+    def _calculate_signals_single(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Validate and initialize strategy parameters.
-        Converts month-based inputs to trading days and verifies that the ROC periods exceed the WMA window.
-        """
-        self.roc1_months = max(1, int(self.params.get('roc1_months', 14)))
-        self.roc2_months = max(1, int(self.params.get('roc2_months', 11)))
-        self.roc1_days = self.roc1_months * 21  # Approximate trading days per month.
-        self.roc2_days = self.roc2_months * 21
-        # wma_lookback is specified in units of months (default 10) then converted to days.
-        self.wma_lookback = max(5, int(self.params.get('wma_lookback', 10))) * 21
-        self.method = self.params.get('method', 'zero_crossing')
-        self.long_only = self.params.get('long_only', True)
+        Calculate the Coppock Curve indicator, raw signals, and strength for a single ticker.
 
-        if min(self.roc1_days, self.roc2_days) <= self.wma_lookback:
-            self.logger.warning("ROC periods should exceed the WMA window for meaningful signals")
-
-    def _init_risk_params(self):
-        """
-        Initialize risk management parameters.
-        """
-        self.stop_loss_pct = self.params.get('stop_loss_pct', 0.05)
-        self.take_profit_pct = self.params.get('take_profit_pct', 0.10)
-        self.trailing_stop_pct = self.params.get('trailing_stop_pct', 0.0)
-        self.slippage_pct = self.params.get('slippage_pct', 0.001)
-        self.transaction_cost_pct = self.params.get('transaction_cost_pct', 0.001)
-
-    def _init_strength_params(self):
-        """
-        Initialize momentum strength parameters.
-        """
-        self.strength_window = int(self.params.get('strength_window', 504))
-        self.normalize_strength = self.params.get('normalize_strength', True)
-
-    def _get_validated_prices(self, ticker: str, start_date: str = None, 
-                              end_date: str = None, min_periods: int = 252) -> pd.DataFrame:
-        """
-        Retrieve and validate historical OHLC price data for a given ticker.
-        
-        The method retrieves the data from the database and then forward fills and drops rows with missing values.
-        
         Args:
-            ticker (str): Stock ticker symbol.
-            start_date (str, optional): Start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): End date in 'YYYY-MM-DD' format.
-            min_periods (int): Minimum required records.
-        
+            data (pd.DataFrame): Historical price data for one ticker (OHLCV).
+                                 Index must be DatetimeIndex.
+
         Returns:
-            pd.DataFrame: Validated DataFrame containing 'close', 'high', and 'low'.
-            If insufficient, returns an empty DataFrame.
+            pd.DataFrame: DataFrame with columns: open, close, high, low, cc,
+                          signal, signal_strength. Returns empty if calculation fails.
         """
+        if not isinstance(data.index, pd.DatetimeIndex):
+             logger.error("Input data for _calculate_signals_single must have a DatetimeIndex.")
+             return pd.DataFrame()
+        if 'close' not in data.columns or 'high' not in data.columns or 'low' not in data.columns:
+             logger.error("Input data missing required price columns (close, high, low).")
+             return pd.DataFrame()
+
+        df = data[['open', 'high', 'low', 'close']].copy() # Work with essential columns
+
+        # 1. Calculate Coppock Curve (CC)
         try:
-            prices = self.get_historical_prices(
-                tickers=ticker,
-                from_date=start_date,
-                to_date=end_date,
-                lookback=min_periods if not (start_date or end_date) else None
-            )
-            if not self._validate_data(prices, min_periods):
-                return pd.DataFrame()
-            return prices[['close', 'high', 'low']].ffill().dropna()
-        except Exception as e:
-            self.logger.error(f"Price retrieval failed: {e}")
-            return pd.DataFrame()
+            roc1 = df['close'].pct_change(self.roc1_days) * 100
+            roc2 = df['close'].pct_change(self.roc2_days) * 100
+            combined_roc = (roc1 + roc2)
 
-    def _calculate_coppock_curve(self, close: pd.Series) -> pd.Series:
-        """
-        Calculate the Coppock Curve indicator from the series of closing prices.
-        
-        The computation uses two ROC measures (over roc1_days and roc2_days), sums them,
-        and applies a weighted moving average with linearly increasing weights.
-        
-        Args:
-            close (pd.Series): Series of closing prices.
-        
-        Returns:
-            pd.Series: The Coppock Curve indicator.
-        """
-        roc1 = close.pct_change(self.roc1_days) * 100
-        roc2 = close.pct_change(self.roc2_days) * 100
-        combined_roc = (roc1 + roc2).dropna()
-        # Generate weights; convert window in days back to the original count (months) for weight sequence.
-        weights = self.generate_repeated_array(int(self.wma_lookback / 21))
-        wma = combined_roc.rolling(
-            window=self.wma_lookback,
-            min_periods=int(self.wma_lookback * 0.8)
-        ).apply(
-            lambda x: np.dot(x, weights[-len(x):]) / weights[-len(x):].sum(),
-            raw=True
-        )
-        return wma
-
-    def _generate_raw_signals(self, prices: pd.DataFrame, cc: pd.Series) -> pd.DataFrame:
-        """
-        Generate raw trading signals based on the Coppock Curve using the zero-crossing method.
-        
-        A long signal (1) is triggered when the Coppock Curve, after 4 consecutive negative values,
-        crosses above 0; a short signal (-1) is generated when 4 consecutive positive values turn negative.
-        Additionally, momentum strength is computed as the divergence from a 21-day reference.
-        
-        Args:
-            prices (pd.DataFrame): Price data with 'close', 'high', and 'low'.
-            cc (pd.Series): Coppock Curve indicator.
-        
-        Returns:
-            pd.DataFrame: DataFrame with columns: 'close', 'high', 'low', 'signal', 'strength'.
-        """
-        df = prices.assign(cc=cc).dropna()
-        if df.empty:
-            return df
-
-        shifted_cc = df['cc'].shift(1)
-        df['was_negative'] = (shifted_cc < 0).rolling(4, min_periods=4).sum() == 4
-        df['was_positive'] = (shifted_cc > 0).rolling(4, min_periods=4).sum() == 4
-
-        df['signal'] = np.select(
-            [df['was_negative'] & (df['cc'] > 0),
-             df['was_positive'] & (df['cc'] < 0)],
-            [1, -1],
-            default=0
-        )
-        
-        ref = df['cc'].rolling(21, min_periods=1).mean().shift()
-        df['strength_raw'] = (df['cc'] - ref) / ref.abs().replace(0, 1)
-        
-        if self.normalize_strength:
-            rolling_min = df['strength_raw'].rolling(self.strength_window, min_periods=1).min()
-            rolling_max = df['strength_raw'].rolling(self.strength_window, min_periods=1).max()
-            df['strength'] = 2 * ((df['strength_raw'] - rolling_min) / (rolling_max - rolling_min).replace(0, 1)) - 1
-        else:
-            df['strength'] = df['strength_raw']
-
-        if self.long_only:
-            df['signal'] = df['signal'].clip(lower=0)
-            
-        return df[['close', 'high', 'low', 'signal', 'strength']]
-
-    def _generate_raw_direction_signals(self, prices: pd.DataFrame, cc: pd.Series) -> pd.DataFrame:
-        """
-        Generate trading signals based on sustained directional changes in the Coppock Curve.
-        
-        This method computes daily changes, monitors sustained trends over a given period, evaluates
-        the previous trend (using a lookback window), and then triggers signals on confirmed reversals.
-        
-        Args:
-            prices (pd.DataFrame): DataFrame containing 'close', 'high', and 'low'.
-            cc (pd.Series): Coppock Curve indicator.
-        
-        Returns:
-            pd.DataFrame: DataFrame with columns: 'close', 'high', 'low', 'signal', 'strength'.
-        """
-        df = prices.assign(cc=cc).dropna()
-        if df.empty:
-            return df
-
-        sustain_days = self.params.get('sustain_days', 4)
-        trend_strength = self.params.get('trend_strength_threshold', 0.75)
-
-        df['direction'] = np.sign(df['cc'].diff())
-        df['sustained_up'] = (
-            df['direction']
-            .rolling(window=sustain_days, min_periods=sustain_days)
-            .min() > 0
-        )
-        df['sustained_down'] = (
-            df['direction']
-            .rolling(window=sustain_days, min_periods=sustain_days)
-            .max() < 0
-        )
-
-        lookback = max(sustain_days * 2, 10)
-        df['prev_direction'] = df['direction'].shift(sustain_days)
-        df['prev_trend'] = (
-            df['prev_direction']
-            .rolling(window=lookback, min_periods=lookback)
-            .apply(
-                lambda x: 1 if np.nanmean(x) > trend_strength else -1 if np.nanmean(x) < -trend_strength else 0,
+            # Use the generate_repeated_array for WMA weights
+            # input_number should be the original number of months
+            weights = self.generate_repeated_array(self.wma_lookback_months)
+            # Apply WMA using the generated weights
+            cc = combined_roc.rolling(
+                window=self.wma_lookback_days,
+                min_periods=int(self.wma_lookback_days * 0.8) # Require 80% of window
+            ).apply(
+                lambda x: np.dot(x, weights[-len(x):]) / weights[-len(x):].sum() if weights[-len(x):].sum() != 0 else 0,
                 raw=True
             )
-        )
+            df['cc'] = cc
+            df = df.dropna(subset=['cc']) # Drop rows where CC couldn't be calculated
 
-        df['signal'] = np.select(
-            [
-                df['sustained_up'] & (df['prev_trend'] < 0) & (df['direction'] > 0),
-                df['sustained_down'] & (df['prev_trend'] > 0) & (df['direction'] < 0)
-            ],
-            [1, -1],
-            default=0
-        )
-
-        ref = df['cc'].rolling(21, min_periods=1).mean().shift()
-        df['strength_raw'] = (df['cc'] - ref) / ref.abs().replace(0, 1)
-        
-        if self.normalize_strength:
-            rolling_min = df['strength_raw'].rolling(self.strength_window, min_periods=1).min()
-            rolling_max = df['strength_raw'].rolling(self.strength_window, min_periods=1).max()
-            df['strength'] = 2 * ((df['strength_raw'] - rolling_min) / (rolling_max - rolling_min).replace(0, 1)) - 1
-        else:
-            df['strength'] = df['strength_raw']
-
-        if self.long_only:
-            df['signal'] = df['signal'].clip(lower=0)
-
-        return df[['close', 'high', 'low', 'signal', 'strength']]
-
-    def _apply_risk_management(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
-        """
-        Incorporate risk management adjustments (stop-loss, take-profit, slippage, transaction costs)
-        on the raw trading signals.
-        
-        Uses the RiskManager to compute:
-            - Adjusted entry prices.
-            - Exit conditions with realized trade return.
-            - Cumulative returns.
-        
-        Args:
-            signals (pd.DataFrame): DataFrame with 'signal', 'close', 'high', 'low' and 'strength'.
-            initial_position (int): Starting position (0: flat, 1: long, -1: short).
-        
-        Returns:
-            pd.DataFrame: DataFrame including columns: 'close', 'high', 'low', 'signal', 'position',
-                          'return', 'cumulative_return', 'exit_type', and 'strength'.
-        """
-        risk_manager = RiskManager(
-            stop_loss_pct=self.stop_loss_pct,
-            take_profit_pct=self.take_profit_pct,
-            slippage_pct=self.slippage_pct,
-            transaction_cost_pct=self.transaction_cost_pct
-        )
-        try:
-            managed = risk_manager.apply(
-                signals[['signal', 'close', 'high', 'low']].copy(),
-                initial_position=initial_position
-            )
-            return managed.join(signals[['strength']], how='left')
         except Exception as e:
-            self.logger.error(f"Risk management failed: {e}")
+            logger.error(f"Error calculating Coppock Curve: {e}")
             return pd.DataFrame()
 
-    def _process_latest_signal(self, signals: pd.DataFrame) -> pd.DataFrame:
-        """
-        Extract the most recent signal from the signals DataFrame.
-        
-        This is useful for forecasting/end-of-day decisions.
-        
-        Args:
-            signals (pd.DataFrame): DataFrame with trading signals.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing only the last available signal.
-        """
-        return signals.iloc[[-1]].dropna()
+        if df.empty:
+            logger.warning("DataFrame empty after Coppock Curve calculation and NaN drop.")
+            return df
 
-    def generate_signals(self, ticker: Union[str, List[str]], start_date: str = None,
-                         end_date: str = None, initial_position: int = 0,
-                         latest_only: bool = False) -> pd.DataFrame:
-        """
-        Generate trading signals using the Coppock Curve indicator with integrated risk management.
-        
-        The method supports backtesting (with a specific start/end date) and forecasting (returning only the latest signal).
-        It accepts either a single ticker (str) or a list of tickers. For multiple tickers, the function retrieves
-        data in one query and then groups the processing per ticker.
-        
-        Args:
-            ticker (str or List[str]): Stock ticker symbol or list of symbols.
-            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-            initial_position (int): Starting trading position (default=0).
-            latest_only (bool): If True, returns only the last signal (per ticker in multi-ticker scenarios).
-        
-        Returns:
-            pd.DataFrame: DataFrame containing:
-                - 'close', 'high', 'low': Price data.
-                - 'signal': Raw trading signal (before risk management).
-                - 'position': Final position (after risk management adjustments).
-                - 'return': Realized return on exit events.
-                - 'cumulative_return': Cumulative risk-managed return.
-                - 'exit_type': Indicator for the type of exit (e.g. 'stop_loss', 'take_profit', 'signal_exit', 'none').
-                - 'strength': Momentum strength indicator.
-                In view (forecast) mode, only the last available row per ticker is returned.
-        """
-        # Determine required minimum periods from indicator lookbacks.
-        min_periods = max(self.roc1_days, self.roc2_days) + self.wma_lookback + 21
+        # 2. Generate Raw Signals based on selected method
+        shifted_cc = df['cc'].shift(1) # Used in both methods
 
-        # Multi-ticker processing.
-        if isinstance(ticker, list):
-            # Retrieve prices for all tickers (returns a MultiIndex DataFrame: ticker and date)
-            all_prices = self.get_historical_prices(
+        if self.method == 'zero_crossing':
+            if self.zc_require_prior_state:
+                # Original strict logic: Check for sustained state BEFORE the crossing bar
+                sustain_periods = max(1, self.zc_sustain_days) # Ensure at least 1 period
+                was_negative = (shifted_cc < 0).rolling(sustain_periods, min_periods=sustain_periods).sum() == sustain_periods
+                was_positive = (shifted_cc > 0).rolling(sustain_periods, min_periods=sustain_periods).sum() == sustain_periods
+                buy_mask = was_negative & (df['cc'] > 0)
+                sell_mask = was_positive & (df['cc'] < 0)
+            else:
+                # Relaxed logic: Simple zero cross
+                buy_mask = (shifted_cc < 0) & (df['cc'] > 0)
+                sell_mask = (shifted_cc > 0) & (df['cc'] < 0)
+
+        elif self.method == 'directional':
+            df['direction'] = np.sign(df['cc'].diff())
+            # Check for sustained directionality for 'sustain_days'
+            sustained_up = (df['direction'].rolling(window=self.sustain_days, min_periods=self.sustain_days).min() > 0)
+            sustained_down = (df['direction'].rolling(window=self.sustain_days, min_periods=self.sustain_days).max() < 0)
+
+            if self.dir_require_prior_trend:
+                # Original strict logic: Require a confirmed prior counter-trend
+                lookback_trend = max(self.sustain_days * 2, 10) # Lookback for prior trend
+                prev_direction_block = df['direction'].shift(self.sustain_days) # Direction before the sustained move started
+                # Assess average direction in the lookback period *before* the sustained move
+                prev_trend_mean = prev_direction_block.rolling(window=lookback_trend, min_periods=lookback_trend).mean()
+
+                # Define prior trend state based on the average direction meeting the threshold
+                prev_trend_state = np.select(
+                    [prev_trend_mean > self.trend_strength_threshold,
+                     prev_trend_mean < -self.trend_strength_threshold],
+                    [1, -1], # 1 = prior uptrend, -1 = prior downtrend
+                    default=0 # 0 = neutral/no clear trend meeting threshold
+                )
+                # Buy if sustained up after prior confirmed downtrend
+                buy_mask = sustained_up & (prev_trend_state == -1)
+                # Sell if sustained down after prior confirmed uptrend
+                sell_mask = sustained_down & (prev_trend_state == 1)
+            else:
+                # Relaxed logic: Signal only on sustained direction
+                buy_mask = sustained_up
+                sell_mask = sustained_down
+        else:
+            logger.error(f"Invalid signal generation method: {self.method}")
+            return pd.DataFrame()
+
+        df['signal'] = 0
+        df.loc[buy_mask, 'signal'] = 1
+        df.loc[sell_mask, 'signal'] = -1
+
+        # 3. Calculate Signal Strength
+        # Use divergence from a short-term MA of CC (e.g., 21-day)
+        ref_ma = df['cc'].rolling(21, min_periods=1).mean().shift() # Shift to avoid lookahead bias
+        strength_raw = (df['cc'] - ref_ma) / ref_ma.abs().replace(0, 1e-6) # Avoid division by zero
+
+        if self.normalize_strength:
+            rolling_min = strength_raw.rolling(self.strength_window, min_periods=1).min()
+            rolling_max = strength_raw.rolling(self.strength_window, min_periods=1).max()
+            range_ = (rolling_max - rolling_min).replace(0, 1e-6) # Avoid division by zero
+            df['signal_strength'] = 2 * ((strength_raw - rolling_min) / range_) - 1
+        else:
+            df['signal_strength'] = strength_raw
+
+        # Apply long-only constraint if specified AFTER potential sell signals are generated
+        if self.long_only:
+            df.loc[df['signal'] == -1, 'signal'] = 0 # Clip sell signals to 0 (exit long)
+
+        # Keep only necessary columns for the next step (RiskManager) + indicator value
+        return df[['open', 'close', 'high', 'low', 'cc', 'signal', 'signal_strength']].copy()
+
+
+    def generate_signals(
+        self,
+        ticker: Union[str, List[str]],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        initial_position: int = 0,
+        latest_only: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Generate risk-managed trading signals for the Coppock Curve strategy.
+
+        Fetches data, calculates indicators and raw signals, applies risk management,
+        and computes performance metrics consistent with the AwesomeOscillatorStrategy output.
+
+        Args:
+            ticker (str or List[str]): Stock ticker symbol or list of tickers.
+            start_date (str, optional): Backtest start date ('YYYY-MM-DD').
+            end_date (str, optional): Backtest end date ('YYYY-MM-DD').
+            initial_position (int): Starting trading position (0: flat, 1: long, -1: short). Default is 0.
+                                      For multi-ticker, this applies to all unless RiskManager handles dict.
+            latest_only (bool): If True, returns only the most recent signal row(s).
+
+        Returns:
+            pd.DataFrame: DataFrame containing prices, indicator, signals, positions,
+                          returns, and risk management details. Structure matches
+                          AwesomeOscillatorStrategy output. Returns empty DataFrame on failure.
+        """
+        try:
+            # Determine lookback buffer needed for calculations
+            # Needs longest ROC/WMA, plus strength window, plus MA for strength, plus buffer
+            min_periods_indicator = max(self.roc1_days, self.roc2_days, self.wma_lookback_days)
+            # Buffer needed depends on signal method conditions (e.g., zc_sustain_days, lookback_trend)
+            signal_method_buffer = 0
+            if self.method == 'zero_crossing' and self.zc_require_prior_state:
+                 signal_method_buffer = self.zc_sustain_days
+            elif self.method == 'directional' and self.dir_require_prior_trend:
+                 signal_method_buffer = max(self.sustain_days * 2, 10) # lookback_trend
+
+            min_periods = min_periods_indicator + signal_method_buffer + self.strength_window + 21 + 5 # Extra buffer
+
+            # Retrieve historical price data using BaseStrategy method
+            data = self.get_historical_prices(
                 tickers=ticker,
                 from_date=start_date,
                 to_date=end_date,
                 lookback=min_periods if not (start_date or end_date) else None
             )
-            if all_prices.empty:
-                return pd.DataFrame()
-            signals_list = []
-            # Process each ticker group separately.
-            for tkr, group in all_prices.groupby(level='ticker'):
-                group = group.reset_index(level='ticker', drop=True)
-                if len(group) < min_periods:
-                    continue
-                prices = group[['close', 'high', 'low']].ffill().dropna()
-                if prices.empty:
-                    continue
-                cc = self._calculate_coppock_curve(prices['close'])
-                if self.method == 'zero_crossing':
-                    sig = self._generate_raw_signals(prices, cc)
-                else:
-                    sig = self._generate_raw_direction_signals(prices, cc)
-                if sig.empty:
-                    continue
-                sig_rm = self._apply_risk_management(sig, initial_position)
-                # Add a ticker column.
-                sig_rm['ticker'] = tkr
-                signals_list.append(sig_rm)
-            if not signals_list:
-                return pd.DataFrame()
-            df_signals = pd.concat(signals_list)
-            # Re-set multi-index as (ticker, date)
-            if 'ticker' in df_signals.columns:
-                df_signals.set_index('ticker', append=True, inplace=True)
-            df_signals.sort_index(inplace=True)
-            if latest_only:
-                df_signals = df_signals.groupby(level='ticker').apply(lambda group: group.iloc[[-1]]).reset_index(level=0, drop=False)
-            return df_signals
 
-        # Single ticker processing.
-        else:
-            prices = self._get_validated_prices(
-                ticker=ticker,
-                start_date=start_date,
-                end_date=end_date,
-                min_periods=min_periods
-            )
-            if prices.empty:
-                return pd.DataFrame()
-            cc = self._calculate_coppock_curve(prices['close'])
-            if self.method == 'zero_crossing':
-                signals = self._generate_raw_signals(prices, cc)
+
+            if data.empty:
+                 logger.warning(f"No historical price data found for {ticker} within the specified parameters.")
+                 return pd.DataFrame()
+
+            data = data.sort_index() # Ensure data is sorted by date/ticker
+
+            signals_list = []
+            # Handle MULTI-TICKER input (data has MultiIndex)
+            if isinstance(ticker, list):
+                 if not isinstance(data.index, pd.MultiIndex):
+                      logger.error("Expected MultiIndex for multiple tickers, but got single index.")
+                      return pd.DataFrame()
+                 # Assume level 0 of MultiIndex is the ticker identifier
+                 ticker_level_name = data.index.names[0] if data.index.names[0] else 0
+                 # Check if data is sorted appropriately for groupby
+                 if not data.index.is_monotonic_increasing:
+                     logger.warning("MultiIndex data is not sorted. Sorting by index.")
+                     data = data.sort_index()
+
+                 for tkr, group_data in data.groupby(level=ticker_level_name, sort=False): # Use sort=False if already sorted
+                      # Drop the ticker level from index for single ticker processing
+                     single_ticker_data = group_data.reset_index(level=ticker_level_name, drop=True)
+
+                     if not self._validate_data(single_ticker_data, min_records=min_periods):
+                         logger.warning(f"Insufficient data for {tkr} after fetching ({len(single_ticker_data)} records, need {min_periods}). Skipping.")
+                         continue
+
+                     # Calculate raw signals and strength for this ticker
+                     sig_raw = self._calculate_signals_single(single_ticker_data)
+                     if sig_raw.empty:
+                         logger.warning(f"Signal calculation failed for ticker {tkr}. Skipping.")
+                         continue
+
+                     # Apply Risk Management
+                     rm_input_cols = ['signal', 'close', 'high', 'low', 'open']
+                     if not all(col in sig_raw.columns for col in rm_input_cols):
+                          logger.error(f"Ticker {tkr}: Raw signals DataFrame missing columns required by RiskManager: {rm_input_cols}. Skipping.")
+                          continue
+
+                     # Pass initial position (could be a dict handled by RM)
+                     # For now, assume RiskManager handles single int or dict if passed
+                     rm_initial_pos = initial_position # Pass the original arg, let RM handle dict if needed
+                     sig_rm = self.risk_manager.apply(sig_raw[rm_input_cols], rm_initial_pos) # Pass initial pos
+
+                     if sig_rm.empty:
+                         logger.warning(f"Risk management failed for ticker {tkr}. Skipping.")
+                         continue
+
+                     # Add back indicator and strength columns after RM
+                     sig_rm = sig_rm.join(sig_raw[['cc', 'signal_strength']], how='left')
+
+                     # Calculate additional metrics
+                     sig_rm['daily_return'] = sig_rm['close'].pct_change().fillna(0)
+                     sig_rm['strategy_return'] = sig_rm['daily_return'] * sig_rm['position'].shift(1).fillna(0)
+
+                     # Rename RM columns for consistency
+                     sig_rm.rename(columns={'return': 'rm_strategy_return',
+                                         'cumulative_return': 'rm_cumulative_return',
+                                         'exit_type': 'rm_action'}, inplace=True)
+
+                     # Add ticker identifier column
+                     sig_rm['ticker'] = tkr
+                     signals_list.append(sig_rm)
+
+                 if not signals_list:
+                     logger.warning("No signals generated for any ticker in the list.")
+                     return pd.DataFrame()
+
+                 # Concatenate results for all tickers
+                 signals = pd.concat(signals_list)
+                 # Restore the original MultiIndex structure if needed (RM might return Ticker as column)
+                 # This assumes RM output has date index and 'ticker' column if input was MultiIndex
+                 if 'ticker' in signals.columns and signals.index.name == 'date': # Common RM output format
+                    signals = signals.set_index(['ticker', signals.index]).sort_index()
+
+                 # Handle latest_only for multi-ticker: get last row per ticker
+                 if latest_only:
+                     # Ensure index is sorted before tail
+                     if not signals.index.is_monotonic_increasing: signals = signals.sort_index()
+                     signals = signals.groupby(level=ticker_level_name, group_keys=False).tail(1) # Works on MultiIndex
+
+
+            # Handle SINGLE-TICKER input
             else:
-                signals = self._generate_raw_direction_signals(prices, cc)
-            if signals.empty:
-                return signals
-            if latest_only:
-                return self._process_latest_signal(signals)
-            return self._apply_risk_management(signals, initial_position)
+                if not isinstance(data.index, pd.DatetimeIndex):
+                     logger.error("Expected DatetimeIndex for single ticker, but got different index type.")
+                     return pd.DataFrame()
+                if not self._validate_data(data, min_records=min_periods):
+                    logger.warning(f"Insufficient data for {ticker} ({len(data)} records, need {min_periods}).")
+                    return pd.DataFrame()
+
+                # Calculate raw signals and strength
+                sig_raw = self._calculate_signals_single(data)
+                if sig_raw.empty:
+                    logger.warning(f"Signal calculation failed for ticker {ticker}.")
+                    return pd.DataFrame()
+
+                # Apply Risk Management
+                rm_input_cols = ['signal', 'close', 'high', 'low', 'open']
+                if not all(col in sig_raw.columns for col in rm_input_cols):
+                     logger.error(f"Ticker {ticker}: Raw signals DataFrame missing columns required by RiskManager: {rm_input_cols}.")
+                     return pd.DataFrame()
+
+                # Pass initial position (must be int for single ticker)
+                if not isinstance(initial_position, int):
+                     logger.warning(f"Received non-integer initial_position ({initial_position}) for single ticker {ticker}. Using 0.")
+                     rm_initial_pos = 0
+                else:
+                     rm_initial_pos = initial_position
+
+                signals = self.risk_manager.apply(sig_raw[rm_input_cols], rm_initial_pos) # Pass initial pos
+                if signals.empty:
+                     logger.warning(f"Risk management failed for ticker {ticker}.")
+                     return pd.DataFrame()
+
+                # Add back indicator and strength
+                signals = signals.join(sig_raw[['cc', 'signal_strength']], how='left')
+
+                # Calculate additional metrics
+                signals['daily_return'] = signals['close'].pct_change().fillna(0)
+                signals['strategy_return'] = signals['daily_return'] * signals['position'].shift(1).fillna(0)
+
+                # Rename RM columns
+                signals.rename(columns={'return': 'rm_strategy_return',
+                                        'cumulative_return': 'rm_cumulative_return',
+                                        'exit_type': 'rm_action'}, inplace=True)
+
+                # Handle latest_only for single-ticker
+                if latest_only:
+                    signals = signals.iloc[[-1]].copy() # Return only the last row
+
+            # Ensure standard column order if possible (adjust as needed)
+            final_cols_base = [
+                'open', 'high', 'low', 'close', 'cc', 'signal', 'signal_strength',
+                'position', 'daily_return', 'strategy_return',
+                'rm_strategy_return', 'rm_cumulative_return', 'rm_action'
+            ]
+            if isinstance(ticker, list):
+                final_cols = final_cols_base # Ticker is in index
+            else:
+                final_cols = final_cols_base # Ticker not applicable
+
+            # Add missing columns with NaN if they weren't generated
+            for col in final_cols:
+                if col not in signals.columns:
+                    # Check if it's expected (e.g., 'ticker' for single)
+                    if col == 'ticker' and not isinstance(ticker, list):
+                         continue # Don't add ticker column for single ticker mode
+                    signals[col] = np.nan
+
+            # Return only the desired columns present in the DataFrame
+            present_final_cols = [col for col in final_cols if col in signals.columns]
+            return signals[present_final_cols].copy() # Return a copy with desired columns
+
+        except DataRetrievalError as dre:
+             logger.error(f"Data retrieval error for {ticker}: {dre}")
+             return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error generating signals for {ticker}: {str(e)}", exc_info=True) # Log traceback
+            return pd.DataFrame()
 
     def __repr__(self):
-        """
-        Return a string representation of the CoppockCurveStrategy instance including key parameters.
-        """
-        return (f"CoppockCurveStrategy(ROC={self.roc1_months}/{self.roc2_months}mo, "
-                f"WMA={self.wma_lookback}, SL={self.stop_loss_pct*100:.1f}%, TP={self.take_profit_pct*100:.1f}%)")
+        """Return a string representation of the CoppockCurveStrategy instance."""
+        risk_params = self.risk_manager # Access the initialized RM
+        # Add new params to representation
+        zc_cond = f"PriorState({self.zc_sustain_days}d)" if self.zc_require_prior_state else "SimpleX"
+        dir_cond = f"PriorTrend({self.trend_strength_threshold:.2f})" if self.dir_require_prior_trend else "SustainOnly"
+        method_detail = f"{self.method}({zc_cond})" if self.method == 'zero_crossing' else f"{self.method}({dir_cond}, Sustain={self.sustain_days}d)"
+
+        repr_str = (
+            f"CoppockCurveStrategy(ROC={self.roc1_months}mo/{self.roc2_months}mo, "
+            f"WMA={self.wma_lookback_months}mo ({self.wma_lookback_days}d), "
+            f"Method={method_detail}, LongOnly={self.long_only}, "
+            f"SL={risk_params.stop_loss_pct:.1%}, TP={risk_params.take_profit_pct:.1%}, "
+            f"TSL={'Disabled' if risk_params.trailing_stop_pct == 0 else f'{risk_params.trailing_stop_pct:.1%}'})"
+        )
+        return repr_str

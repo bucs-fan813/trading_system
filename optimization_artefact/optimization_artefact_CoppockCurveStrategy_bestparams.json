@@ -1,14 +1,17 @@
 {
+    "dir_require_prior_trend": false,
     "long_only": true,
     "method": "directional",
-    "normalize_strength": true,
-    "roc1_months": 14.0,
-    "roc2_months": 10.0,
-    "stop_loss_pct": 0.09440026132017895,
+    "normalize_strength": false,
+    "roc1_months": 7.0,
+    "roc2_months": 2.0,
+    "stop_loss_pct": 0.055621769860735554,
     "strength_window": 315.0,
-    "sustain_days": 6.0,
-    "take_profit_pct": 0.18383105595228982,
-    "trailing_stop_pct": 0.044196331273630776,
-    "trend_strength_threshold": 0.7860356993029923,
-    "wma_lookback": 13.0
+    "sustain_days": 2.0,
+    "take_profit_pct": 0.14107876148550536,
+    "trailing_stop_pct": 0.03862628517761828,
+    "trend_strength_threshold": 0.370975417508257,
+    "wma_lookback": 4.0,
+    "zc_require_prior_state": false,
+    "zc_sustain_days": 5.0
 }
