@@ -1,0 +1,27 @@
+{
+    "kst_weights": [
+        4,
+        3,
+        2,
+        1
+    ],
+    "long_only": true,
+    "risk_params": {
+        "stop_loss_pct": 0.031787436907420794,
+        "take_profit_pct": 0.07529553573492544,
+        "trailing_stop_pct": 0.034757591971143136
+    },
+    "roc_periods": [
+        10,
+        15,
+        20,
+        30
+    ],
+    "signal_period": 5.0,
+    "sma_periods": [
+        5,
+        5,
+        5,
+        10
+    ]
+}
