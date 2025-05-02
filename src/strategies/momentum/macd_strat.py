@@ -1,441 +1,400 @@
-# trading_system/src/strategies/macd_strat.py
+# trading_system/src/strategies/momentum/macd_strat.py
 
 import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, Optional, Union, List
+
+# Assuming BaseStrategy and DatabaseConfig are correctly imported
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
+from src.database.config import DatabaseConfig # Assuming this exists
+
 # Assuming RiskManager is correctly imported from its location
-# from src.strategies.risk_management import RiskManager 
-# Use the provided definition or ensure correct import path
 try:
-    # Assuming risk_management.py is in the same directory for this example
-    from risk_management import RiskManager 
-except ImportError:
-    # Fallback if structure is different, adjust as needed
+    # Adjust import path based on your project structure
     from src.strategies.risk_management import RiskManager
+except ImportError:
+    # Fallback for local testing if needed
+    # from risk_management import RiskManager # Comment out if not needed locally
+    raise ImportError("Could not import RiskManager. Ensure it's in the correct path.")
 
 
 class MACDStrategy(BaseStrategy):
     """
     MACD Trading Strategy with Integrated Risk Management.
-    
+
+    Generates trading signals based on MACD crossovers and applies risk management.
+
     Mathematical formulation:
-        - Fast EMA:      fast_ema = EMA(close, span=fast)
-        - Slow EMA:      slow_ema = EMA(close, span=slow)
-        - MACD line:     macd = fast_ema - slow_ema
-        - Signal line:   signal_line = EMA(macd, span=smooth)
-        - Histogram:     histogram = macd - signal_line
-    
-    Trading signals are generated based on crossovers:
-        - A bullish (long) signal (+1) is generated when MACD crosses above the signal line.
-        - A bearish (short) signal (–1) is generated when MACD crosses below the signal line.
-          Under long-only mode, bearish crossovers are ignored (resulting in no signal, i.e. 0).
-    
-    Signal strength is measured using the absolute value of the histogram.
-    
-    This strategy integrates risk management via the RiskManager component. When a trading signal is generated,
-    the RiskManager adjusts entry prices for slippage and transaction costs, determines stop-loss and take-profit
-    levels, identifies exit events, computes realized trade returns, and tracks cumulative returns.
-    
-    The strategy supports both:
-      - Full historical backtesting (using a specified date range).
-      - Real-time forecasting (by retrieving only the recent lookback data to ensure indicator stability).
-    
-    In addition, it supports vectorized processing of multiple tickers.
-    
-    Outputs:
-        A DataFrame containing:
-          - Ticker symbol (in index if multiple tickers)
-          - Price data:           'open', 'high', 'low', 'close', 'volume'
-          - MACD indicators:      'macd', 'signal_line', 'histogram'
-          - Raw trading signals:  'raw_signal' and a computed 'signal_strength'
-          - Risk-managed results: 'position', 'return', 'cumulative_return', 'exit_type'
-    
+        - Fast EMA:      EMA(close, span=fast_period)
+        - Slow EMA:      EMA(close, span=slow_period)
+        - MACD line:     fast_ema - slow_ema ('macd')
+        - Signal line:   EMA(macd_line, span=smooth_period) ('signal_line')
+        - Histogram:     macd_line - signal_line ('histogram')
+
+    Trading signals ('signal'):
+        - Bullish (+1): MACD crosses above the signal line.
+        - Bearish (-1): MACD crosses below the signal line (ignored if 'long_only'=True).
+
+    Signal strength ('signal_strength'):
+        - Absolute value of the MACD histogram.
+
+    Risk Management Integration (via RiskManager):
+        - Uses 'signal', 'open', 'high', 'low', 'close' as input.
+        - Adjusts for costs/slippage, calculates stops/targets/trailing stops.
+        - Outputs final 'position', risk-managed realized return ('rm_strategy_return'),
+          risk-managed cumulative return ('rm_cumulative_return'), and exit reason ('rm_action').
+
+    Output Format (`generate_signals` method):
+        - Returns a dictionary where keys are ticker symbols (str) and values are
+          pandas DataFrames.
+        - Each DataFrame corresponds to a single ticker and has a DatetimeIndex.
+        - Columns include:
+            - Price data: 'open', 'high', 'low', 'close', 'volume'
+            - MACD indicators: 'macd', 'signal_line', 'histogram'
+            - Core signal: 'signal' (the crossover signal: 1, -1, or 0)
+            - Signal strength: 'signal_strength'
+            - Risk-managed results: 'position', 'rm_strategy_return',
+                                    'rm_cumulative_return', 'rm_action'
+            - Auxiliary performance metrics: 'daily_return', 'strategy_return'
+
     Args:
-        db_config: Database configuration.
-        params (Optional[Dict]): Strategy hyperparameters.
+        db_config (DatabaseConfig): Database configuration object.
+        params (Optional[Dict]): Strategy hyperparameters (see __init__ defaults).
     """
-    
-    def __init__(self, db_config, params: Optional[Dict] = None):
+
+    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the MACD strategy with specified hyperparameters and database configuration.
-        
+        Initialize the MACD strategy.
+
+        Args:
+            db_config (DatabaseConfig): Database configuration.
+            params (Optional[Dict]): Strategy hyperparameters. Keys include:
+                'slow', 'fast', 'smooth', 'long_only', 'stop_loss_pct',
+                'take_profit_pct', 'trailing_stop_pct', 'slippage_pct',
+                'transaction_cost_pct'. Defaults are applied if keys are missing.
+
         Raises:
-            ValueError: If the slow period is not greater than the fast period or if MACD periods are not integers.
+            ValueError: If slow period <= fast period, or periods are invalid/missing.
+            ImportError: If RiskManager cannot be imported.
         """
-        # Ensure params is a dictionary if None is passed
-        if params is None:
-            params = {}
-            
-        super().__init__(db_config, params)
+        default_params = {
+            'slow': 26, 'fast': 12, 'smooth': 9,
+            'stop_loss_pct': 0.05, 'take_profit_pct': 0.10, 'trailing_stop_pct': 0.0,
+            'slippage_pct': 0.001, 'transaction_cost_pct': 0.001, 'long_only': True
+        }
+        # Resolve parameters: start with defaults, update with provided params
+        resolved_params = default_params.copy()
+        if params:
+            resolved_params.update(params)
+
+        super().__init__(db_config, resolved_params) # Pass final params to base
         self.logger = logging.getLogger(self.__class__.__name__)
-        
-        # Set default hyperparameters if not provided.
-        self.params.setdefault('slow', 26)
-        self.params.setdefault('fast', 12)
-        self.params.setdefault('smooth', 9)
-        self.params.setdefault('stop_loss_pct', 0.05)
-        self.params.setdefault('take_profit_pct', 0.10)
-        self.params.setdefault('trailing_stop_pct', 0.0)
-        self.params.setdefault('slippage_pct', 0.001)
-        self.params.setdefault('transaction_cost_pct', 0.001)
-        self.params.setdefault('long_only', True)
 
-        # Ensure MACD periods are integers
+        # Validate and store core strategy parameters, ensuring correct type
         try:
-            self.params['slow'] = int(self.params['slow'])
-            self.params['fast'] = int(self.params['fast'])
-            self.params['smooth'] = int(self.params['smooth'])
+            # Use .get() with default=None to check presence before casting
+            slow = self.params.get('slow')
+            fast = self.params.get('fast')
+            smooth = self.params.get('smooth')
+            if slow is None or fast is None or smooth is None:
+                 raise ValueError("MACD parameters 'slow', 'fast', and 'smooth' must be provided.")
+            self.slow_period = int(slow)
+            self.fast_period = int(fast)
+            self.smooth_period = int(smooth)
         except (ValueError, TypeError) as e:
-             raise ValueError(f"MACD periods (slow, fast, smooth) must be convertible to integers: {e}")
+            # Catch explicit casting errors or initial ValueError
+            raise ValueError(f"MACD periods (slow, fast, smooth) must be integer-convertible: {e}")
 
-        
-        # Validate parameter consistency.
-        if self.params['slow'] <= self.params['fast']:
-            raise ValueError("Slow period must be greater than fast period")
-        # Redundant check as int conversion is done above, but kept for clarity
-        if any(not isinstance(p, int) for p in [self.params['slow'], 
-                                                  self.params['fast'], 
-                                                  self.params['smooth']]):
-            raise ValueError("MACD periods must be integers")
+        if self.slow_period <= self.fast_period:
+            raise ValueError(f"Slow period ({self.slow_period}) must be greater than fast period ({self.fast_period})")
 
-    def generate_signals(self, 
-                         ticker: Union[str, List[str]],
-                         start_date: Optional[str] = None,
-                         end_date: Optional[str] = None,
-                         initial_position: int = 0,
-                         latest_only: bool = False) -> pd.DataFrame:
-        """
-        Generate MACD trading signals with risk management adjustments.
-        
-        Retrieves historical price data (for single or multiple tickers), computes MACD-related indicators,
-        generates raw trading signals based on MACD crossovers, and applies risk management rules to
-        adjust positions and compute trade returns. Preserves indices including ticker level for multi-ticker requests.
-        
-        Args:
-            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
-            start_date (str, optional): Backtesting start date (YYYY-MM-DD).
-            end_date (str, optional): Backtesting end date (YYYY-MM-DD).
-            initial_position (int): Initial trading position (0 for flat, 1 for long, -1 for short).
-            latest_only (bool): If True, returns only the most recent signal(s) for each ticker.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing price data, MACD indicators, trading signals,
-                          signal strength, risk-managed positions, returns, and exit types.
-                          Index will be DatetimeIndex for single ticker, MultiIndex 
-                          (level 0: ticker, level 1: date) for multiple tickers.
-        """
+        self.long_only = self.params.get('long_only', True) # Default handled by .get()
+
+        # Initialize RiskManager using parameters stored in self.params
+        risk_params = {
+            'stop_loss_pct': self.params.get('stop_loss_pct'),
+            'take_profit_pct': self.params.get('take_profit_pct'),
+            'trailing_stop_pct': self.params.get('trailing_stop_pct'),
+            'slippage_pct': self.params.get('slippage_pct'),
+            'transaction_cost_pct': self.params.get('transaction_cost_pct')
+        }
         try:
-            # Retrieve historical price data with optimized lookback if only the latest signal is needed.
-            data = self._get_optimized_data(ticker, start_date, end_date, latest_only)
-            
-            if data.empty:
-                self.logger.warning("No data retrieved for ticker(s): %s", ticker)
-                return pd.DataFrame()
+            # Filter out None values if RM constructor doesn't handle them gracefully
+            # risk_params = {k: v for k, v in risk_params.items() if v is not None}
+            self.risk_manager = RiskManager(**risk_params)
+            self.logger.info(f"MACD Strategy initialized: Periods(F/S/Sm)=({self.fast_period}/{self.slow_period}/{self.smooth_period}), "
+                             f"LongOnly={self.long_only}, RiskParams={risk_params}")
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"Failed to initialize RiskManager with params {risk_params}: {e}")
+            raise ValueError(f"Invalid risk management parameters: {e}") # Propagate as config error
 
-            # Determine if processing single or multiple tickers based on data index type.
-            # Use isinstance check on the index directly.
-            is_multi_ticker = isinstance(data.index, pd.MultiIndex)
 
-            if is_multi_ticker:
-                # Process data for each ticker in a vectorized (grouped) manner.
-                # group_keys=False prevents the group key (ticker) from being added as an extra index level
-                # The original MultiIndex structure is typically preserved by apply.
-                results = data.groupby(level=0, group_keys=False).apply(
-                    self._process_single_ticker_group, 
-                    initial_position=initial_position
-                )
-                
-                if latest_only:
-                    # Get the last row for each ticker (group)
-                    results = results.groupby(level=0).tail(1)
-                return results
-            else:
-                # Single ticker processing.
-                # No need to check index type again, process directly.
-                output = self._process_single_ticker_group(data, initial_position)
-                return output.iloc[[-1]] if latest_only else output
-
-        except DataRetrievalError as e:
-             self.logger.error(f"Data retrieval failed for {ticker}: {e}")
-             # Re-raise or return empty based on desired error handling
-             return pd.DataFrame() # Return empty frame on data error
-        except Exception as e:
-            self.logger.exception(f"Error processing ticker(s) {ticker}: {str(e)}") # Use logger.exception for traceback
-            # Re-raise the exception to allow higher-level handling
-            raise 
-
-    def _process_single_ticker_group(self, group_data: pd.DataFrame, initial_position: int) -> pd.DataFrame:
+    def _calculate_signals_single(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Processes data for a single ticker (or a group corresponding to one ticker).
-        Calculates indicators, generates signals, applies risk management, and builds output.
-        Assumes group_data has a DatetimeIndex (or is a slice of a MultiIndex).
-        """
-        # Validate sufficient data for indicator computation.
-        min_required_data = self.params['slow'] + self.params['smooth'] # Minimum needed for EMAs
-        if not self._validate_data(group_data, min_required_data):
-            ticker_name = group_data.index.get_level_values(0)[0] if isinstance(group_data.index, pd.MultiIndex) else "single ticker"
-            self.logger.warning(f"Insufficient data for {ticker_name} ({len(group_data)} rows, need {min_required_data}). Skipping.")
-            return pd.DataFrame() # Return empty frame for this group
+        Calculate MACD indicators and raw signals ('signal') for a single ticker.
 
-        # Compute MACD indicators. Index will match group_data.index
-        macd_line, signal_line, histogram = self._calculate_macd(group_data['close'])
-        
-        # Generate raw trading signals based on MACD crossovers. Index will match group_data.index
-        raw_signals = self._generate_crossover_signals(macd_line, signal_line)
-        
-        # Apply risk management rules. This function now handles index preservation internally.
-        # It expects the group_data and raw_signals with their original index.
-        risk_managed = self._apply_risk_management(group_data, raw_signals, initial_position)
-        
-        # Build and return the final output for the group.
-        # All inputs to _build_output should now share the same index (group_data.index).
-        return self._build_output(group_data, macd_line, signal_line, histogram, raw_signals, risk_managed)
-
-
-    def _get_optimized_data(self, ticker: Union[str, List[str]], 
-                            start_date: Optional[str],
-                            end_date: Optional[str],
-                            latest_only: bool) -> pd.DataFrame:
-        """
-        Retrieve historical price data optimized for MACD calculation stability.
-        
-        If latest_only is True, uses a minimal lookback period (based on slow + smooth parameters + buffer)
-        to ensure that the indicator is stable. Supports both single and multiple tickers.
-        
         Args:
-            ticker (str or List[str]): Stock ticker symbol(s).
-            start_date (str, optional): Start date (YYYY-MM-DD).
-            end_date (str, optional): End date (YYYY-MM-DD).
-            latest_only (bool): Flag indicating retrieval of minimal data required for a stable signal.
-        
+            data (pd.DataFrame): Price data (OHLCV) with DatetimeIndex.
+
         Returns:
-            pd.DataFrame: DataFrame containing historical price data, indexed appropriately
-                          (DatetimeIndex for single ticker, MultiIndex for list).
-        
-        Raises:
-            DataRetrievalError: If data cannot be fetched from the source.
+            pd.DataFrame: Enhanced DataFrame with 'macd', 'signal_line', 'histogram',
+                          'signal', 'signal_strength', plus original OHLCV.
+                          Returns empty DataFrame on failure or insufficient data.
         """
-        try:
-            if latest_only:
-                # Stable EMA calculation needs roughly 3x the period, plus signal smoothing period. Add buffer.
-                # Lookback = (slow_period * 3) + smooth_period + buffer
-                lookback = (self.params['slow'] * 3) + self.params['smooth'] + 30 # Generous buffer
-                self.logger.debug(f"Latest only mode: Using lookback={lookback} bars.")
-                return self.get_historical_prices(ticker, lookback=lookback)
-            else:
-                self.logger.debug(f"Fetching data for {ticker} from {start_date} to {end_date}.")
-                return self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
-        except Exception as e:
-             # Catch specific data errors if BaseStrategy defines them, or broad Exception
-             self.logger.error(f"Failed to retrieve price data for {ticker}: {e}")
-             # Wrap in a custom exception type for clarity
-             raise DataRetrievalError(f"Failed to retrieve price data for {ticker}: {e}")
+        # Minimum data required for reliable calculation (EMA stabilization + smoothing)
+        min_required_data = max(self.slow_period * 2, self.fast_period * 2) + self.smooth_period + 10 # Adjusted heuristic
+        if not self._validate_data(data, min_records=min_required_data):
+            # Logger warning handled by _validate_data
+            return pd.DataFrame()
 
-
-    def _validate_data(self, data: pd.DataFrame, min_rows: int) -> bool:
-        """Check if the DataFrame has enough rows."""
-        if len(data) < min_rows:
-            return False
-        # Optional: Check for NaNs in 'close' if required
-        if data['close'].isnull().any():
-             self.logger.warning("NaN values found in 'close' price data.")
-             # Decide if this should invalidate the data (return False) or just warn
-             # return False 
-        return True
-
-    def _calculate_macd(self, close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
-        """
-        Compute MACD line, Signal line, and Histogram using exponential moving averages.
-        Index of output Series will match the input 'close' Series index.
-        
-        Args:
-            close (pd.Series): Series of closing prices.
-        
-        Returns:
-            tuple: (MACD line, Signal line, Histogram), all pd.Series with matching index.
-        """
-        fast_ema = close.ewm(span=self.params['fast'], adjust=False).mean()
-        slow_ema = close.ewm(span=self.params['slow'], adjust=False).mean()
-        macd_line = fast_ema - slow_ema
-        signal_line = macd_line.ewm(span=self.params['smooth'], adjust=False).mean()
-        histogram = macd_line - signal_line
-        return macd_line, signal_line, histogram
-
-    def _generate_crossover_signals(self, macd: pd.Series, signal: pd.Series) -> pd.Series:
-        """
-        Generate raw trading signals based on MACD and signal line crossovers.
-        Index of output Series will match the input Series index.
-        
-        Args:
-            macd (pd.Series): MACD line series.
-            signal (pd.Series): Signal line series.
-        
-        Returns:
-            pd.Series: Series of raw trading signals (1, 0, -1) with matching index.
-        """
-        # Determine positions based on MACD relative to signal line.
-        above = macd > signal
-        below = macd < signal
-        
-        # Identify crossover events. Ensure consistent index handling with fillna(False)
-        cross_up = above & (~above.shift(1).fillna(False))
-        cross_down = below & (~below.shift(1).fillna(False))
-        
-        # Initialize signals Series with the same index as macd
-        signals = pd.Series(0, index=macd.index, dtype=int) 
-        signals.loc[cross_up] = 1
-        
-        if not self.params['long_only']:
-            signals.loc[cross_down] = -1
-        else:
-            # Explicitly set to 0 for long_only, though initialization covers this
-            signals.loc[cross_down] = 0 
-
-        # Ensure the first signal is 0 if no crossover happened immediately
-        signals.iloc[0] = 0 # Or handle initial state based on strategy rules if needed
-
-        return signals
-
-    def _apply_risk_management(self, data: pd.DataFrame, signals: pd.Series, initial_position: int) -> pd.DataFrame:
-        """
-        Integrate risk management using RiskManager, preserving the original index.
-        
-        Constructs the necessary input DataFrame for RiskManager (with a DatetimeIndex),
-        applies risk management, and then restores the original index to the results.
-        
-        Args:
-            data (pd.DataFrame): Historical price data with 'close', 'high', 'low', 
-                                 and an index (DatetimeIndex or MultiIndex slice).
-            signals (pd.Series): Raw trading signals with matching index.
-            initial_position (int): Initial trading position.
-        
-        Returns:
-            pd.DataFrame: DataFrame with risk-managed results ('position', 'return', etc.)
-                          preserving the original index of 'data' and 'signals'.
-        """
-        # Store the original index
-        original_index = data.index
-        
-        # Prepare the input DataFrame for RiskManager. It needs 'signal', 'close', 'high', 'low'.
-        # Crucially, ensure its index is a simple DatetimeIndex as required by RiskManager.
-        sig_for_rm = pd.DataFrame({
-            'signal': signals,
-            'close': data['close'],
-            'high': data['high'],
-            'low': data['low']
-        }, index=original_index) # Keep original index for now
-
-        # If the original index IS a MultiIndex, create a temporary DataFrame with just the DatetimeIndex.
-        # Otherwise, use the DataFrame as is (with a copy to be safe).
-        if isinstance(original_index, pd.MultiIndex):
-            # Assuming date is level 1 (adjust if necessary)
-            datetime_index = original_index.get_level_values(1) 
-            # Create a temporary DataFrame with the DatetimeIndex for the RiskManager
-            temp_sig_for_rm = sig_for_rm.copy()
-            temp_sig_for_rm.index = datetime_index
-            if not isinstance(temp_sig_for_rm.index, pd.DatetimeIndex):
-                 self.logger.warning("Failed to create DatetimeIndex for RiskManager. Risk processing may fail.")
-                 # Fallback or raise error
-                 # For now, proceed but log warning. The RiskManager will likely raise TypeError.
-                 pass 
-            input_to_rm = temp_sig_for_rm
-        else:
-             # Index is already DatetimeIndex, just use a copy
-             input_to_rm = sig_for_rm.copy()
-             # Verify it's a DatetimeIndex as expected by RiskManager
-             if not isinstance(input_to_rm.index, pd.DatetimeIndex):
-                  raise TypeError(f"RiskManager requires a DatetimeIndex, but received {type(input_to_rm.index)}")
-
-
-        # Initialize and apply RiskManager
-        try:
-            risk_manager = RiskManager(
-                stop_loss_pct=self.params['stop_loss_pct'],
-                take_profit_pct=self.params['take_profit_pct'],
-                trailing_stop_pct=self.params['trailing_stop_pct'],
-                slippage_pct=self.params['slippage_pct'],
-                transaction_cost_pct=self.params['transaction_cost_pct']
-            )
-            
-            # Apply risk management using the DatetimeIndexed data
-            rm_results_temp_index = risk_manager.apply(input_to_rm, initial_position)
-
-        except TypeError as e:
-             # Catch TypeErrors likely caused by incorrect index in RiskManager
-             self.logger.error(f"TypeError during RiskManager application, likely due to index issues: {e}")
-             # Return an empty DataFrame or re-raise, matching desired error handling
-             # Create an empty DataFrame with expected columns and original index
-             rm_cols = ['position', 'return', 'cumulative_return', 'exit_type']
-             return pd.DataFrame(index=original_index, columns=rm_cols).fillna(0) # Fill with 0 or NaN as appropriate
-
-        # --- CRITICAL STEP: Restore the original index ---
-        # The result from RiskManager has the temporary DatetimeIndex.
-        # We need to put the original index (single or MultiIndex) back on.
-        rm_results_original_index = rm_results_temp_index.copy()
-        rm_results_original_index.index = original_index
-
-        # Select only the columns added by the risk manager
-        risk_managed_output_cols = ['position', 'return', 'cumulative_return', 'exit_type']
-        # Ensure columns exist, handling potential errors in RM.apply
-        for col in risk_managed_output_cols:
-             if col not in rm_results_original_index.columns:
-                  rm_results_original_index[col] = 0 # Or np.nan
-                  self.logger.warning(f"RiskManager output missing expected column '{col}'. Added with default value.")
-                  
-        return rm_results_original_index[risk_managed_output_cols]
-
-
-    def _build_output(self, data: pd.DataFrame, macd_line: pd.Series, 
-                      signal_line: pd.Series, histogram: pd.Series, 
-                      raw_signals: pd.Series, risk_managed: pd.DataFrame) -> pd.DataFrame:
-        """
-        Construct the final output DataFrame combining all components.
-        Assumes all input DataFrames/Series share the same index.
-        
-        Args:
-            data (pd.DataFrame): Price data ('open', 'high', 'low', 'close', 'volume').
-            macd_line (pd.Series): Computed MACD line.
-            signal_line (pd.Series): Computed signal line.
-            histogram (pd.Series): MACD histogram.
-            raw_signals (pd.Series): Raw trading signals.
-            risk_managed (pd.DataFrame): Risk-managed results ('position', 'return', etc.).
-        
-        Returns:
-            pd.DataFrame: Combined DataFrame. Index is preserved from inputs.
-        """
-        # Create DataFrame for indicators, ensuring index matches 'data'
-        indicators = pd.DataFrame({
-            'macd': macd_line,
-            'signal_line': signal_line,
-            'histogram': histogram,
-            'raw_signal': raw_signals,
-            'signal_strength': histogram.abs() # Use abs() for magnitude
-        }, index=data.index) # Explicitly use data.index
-        
-        # Select required columns from data
-        price_data = data[['open', 'high', 'low', 'close', 'volume']]
-
-        # Concatenate along columns. Indices must align perfectly.
-        # If _apply_risk_management correctly restored the index, this works.
-        try:
-             output = pd.concat([
-                 price_data,
-                 indicators,
-                 risk_managed # Already contains the correctly indexed RM results
-             ], axis=1)
-        except Exception as e:
-             self.logger.error(f"Failed to concatenate final output DataFrame, likely index mismatch: {e}")
-             # Attempt to show index differences for debugging
-             if not price_data.index.equals(indicators.index):
-                  self.logger.error("Index mismatch between price_data and indicators.")
-             if not price_data.index.equals(risk_managed.index):
-                  self.logger.error("Index mismatch between price_data and risk_managed.")
-                  self.logger.error(f"Price Index Head:\n{price_data.index[:5]}")
-                  self.logger.error(f"Risk Managed Index Head:\n{risk_managed.index[:5]}")
-
-             # Return an empty frame or re-raise
+        # Ensure required columns are present before calculations
+        required_input_cols = ['open', 'high', 'low', 'close', 'volume']
+        if not all(col in data.columns for col in required_input_cols):
+             missing = [col for col in required_input_cols if col not in data.columns]
+             self.logger.error(f"Input data missing required columns for MACD calculation: {missing}")
              return pd.DataFrame()
 
-        return output
+        df = data.copy()
+
+        # Calculate MACD indicators
+        try:
+            fast_ema = df['close'].ewm(span=self.fast_period, adjust=False).mean()
+            slow_ema = df['close'].ewm(span=self.slow_period, adjust=False).mean()
+            df['macd'] = fast_ema - slow_ema
+            df['signal_line'] = df['macd'].ewm(span=self.smooth_period, adjust=False).mean()
+            df['histogram'] = df['macd'] - df['signal_line']
+        except Exception as e:
+             self.logger.error(f"Error calculating MACD indicators: {e}")
+             return pd.DataFrame() # Return empty on calculation error
+
+        # Drop initial NaNs resulting from EMA calculations for cleaner signal logic
+        df = df.dropna(subset=['macd', 'signal_line', 'histogram'])
+        if df.empty:
+             self.logger.warning("DataFrame became empty after dropping NaNs from MACD indicator calculation.")
+             return pd.DataFrame()
+
+        # Generate crossover signals
+        above = df['macd'] > df['signal_line']
+        below = df['macd'] < df['signal_line']
+        # Use fillna(False) for the first comparison after shift
+        # Adding explicit type casting to potentially mitigate FutureWarning if it persists
+        above_shifted = above.shift(1).fillna(False).astype(bool)
+        below_shifted = below.shift(1).fillna(False).astype(bool)
+        cross_up = above & (~above_shifted)
+        cross_down = below & (~below_shifted)
+
+        # Core signal column named 'signal'
+        df['signal'] = 0
+        df.loc[cross_up, 'signal'] = 1
+        if not self.long_only:
+            df.loc[cross_down, 'signal'] = -1
+
+        # Calculate signal strength
+        df['signal_strength'] = df['histogram'].abs()
+
+        # Select and return required columns for the next stage (Risk Manager)
+        # plus the calculated indicators and strength
+        required_output_cols = ['open', 'high', 'low', 'close', 'volume',
+                                'macd', 'signal_line', 'histogram',
+                                'signal', 'signal_strength']
+
+        # Final check if all expected columns are present
+        if not all(col in df.columns for col in required_output_cols):
+             missing = [col for col in required_output_cols if col not in df.columns]
+             self.logger.error(f"Internal error: Missing columns before returning from _calculate_signals_single: {missing}")
+             return pd.DataFrame()
+
+        return df[required_output_cols].copy() # Return a copy
+
+
+    def generate_signals(
+        self,
+        ticker: Union[str, List[str]],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        initial_position: int = 0,
+        latest_only: bool = False
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Generate MACD trading signals with integrated risk management.
+
+        Args:
+            ticker (str or List[str]): Ticker symbol(s).
+            start_date (str, optional): Start date (YYYY-MM-DD).
+            end_date (str, optional): End date (YYYY-MM-DD).
+            initial_position (int): Initial position per ticker (can be overridden
+                                    by RiskManager if passed a dict).
+            latest_only (bool): If True, return only the last row per ticker
+                                in the dictionary values.
+
+        Returns:
+            Dict[str, pd.DataFrame]: Dictionary mapping ticker symbols to their
+                                     results DataFrames. Each DataFrame has a
+                                     DatetimeIndex. Returns empty dict on error.
+                                     See class docstring for column details.
+        """
+        all_signals_dict = {} # Dictionary to store final results per ticker
+        try:
+            # --- Data Retrieval ---
+            # Calculate buffer needed for stable indicators and RM lookback
+            lookback_buffer = max(self.slow_period * 3, 60) + self.smooth_period + 30 # Heuristic
+            if latest_only:
+                 self.logger.debug(f"Latest only mode: Using lookback={lookback_buffer} bars.")
+                 data = self.get_historical_prices(ticker, lookback=lookback_buffer)
+            else:
+                 # Fetch data for the range, BaseStrategy handles buffer if dates are None
+                 self.logger.debug(f"Fetching data for {ticker} from {start_date} to {end_date} with lookback buffer.")
+                 data = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date, lookback=lookback_buffer)
+
+            if data.empty:
+                self.logger.warning(f"No historical data retrieved for ticker(s): {ticker}. Parameters: start={start_date}, end={end_date}, latest={latest_only}")
+                return {}
+
+            # --- Process Data ---
+            is_multi_ticker = isinstance(ticker, list) and len(ticker) > 1
+            # Check if data format matches expectation based on request type
+            if is_multi_ticker and not isinstance(data.index, pd.MultiIndex):
+                self.logger.error(f"Expected MultiIndex data for multiple tickers {ticker}, but received {type(data.index)}.")
+                return {}
+            if not is_multi_ticker and not isinstance(data.index, pd.DatetimeIndex):
+                 # Handle case where single ticker in list might still return MultiIndex from DB layer
+                 if isinstance(data.index, pd.MultiIndex) and isinstance(ticker, list) and len(ticker)==1:
+                      ticker_name_single = ticker[0]
+                      self.logger.warning(f"Received MultiIndex for single ticker request '{ticker_name_single}'. Extracting data.")
+                      try:
+                           data = data.loc[ticker_name_single] # Extract single ticker's data
+                           if not isinstance(data.index, pd.DatetimeIndex): # Check again after extraction
+                                raise TypeError("Index not DatetimeIndex after extraction.")
+                      except Exception as ex_err:
+                           self.logger.error(f"Failed to extract single ticker data from MultiIndex for {ticker_name_single}: {ex_err}")
+                           return {}
+                 else:
+                      self.logger.error(f"Expected DatetimeIndex data for single ticker {ticker}, but received {type(data.index)}.")
+                      return {}
+
+            # --- Loop through Tickers (or process single) ---
+            if is_multi_ticker:
+                ticker_level_name = data.index.names[0] if data.index.names[0] is not None else 0
+                if not data.index.is_monotonic_increasing:
+                    self.logger.warning("Input MultiIndex data is not sorted. Sorting...")
+                    data = data.sort_index()
+
+                for ticker_name, group_data in data.groupby(level=ticker_level_name, sort=False):
+                    # Reset index to get DatetimeIndex for processing
+                    group_data_dt_idx = group_data.reset_index(level=ticker_level_name, drop=True)
+                    self.logger.debug(f"Processing {ticker_name}...")
+                    processed_df = self._process_dataframe(group_data_dt_idx, initial_position, ticker_name)
+                    if processed_df is not None:
+                         if latest_only:
+                             if not processed_df.empty:
+                                 all_signals_dict[ticker_name] = processed_df.iloc[[-1]].copy()
+                         else:
+                             all_signals_dict[ticker_name] = processed_df
+            else:
+                # Process single ticker (data already has DatetimeIndex)
+                ticker_name = ticker if isinstance(ticker, str) else ticker[0]
+                self.logger.debug(f"Processing single ticker {ticker_name}...")
+                 # Handle initial position correctly for single ticker
+                rm_initial_pos = initial_position
+                if isinstance(initial_position, dict):
+                    rm_initial_pos = initial_position.get(ticker_name, 0)
+                elif not isinstance(initial_position, int):
+                    self.logger.warning(f"Initial position for single ticker {ticker_name} is not int, using 0.")
+                    rm_initial_pos = 0
+
+                processed_df = self._process_dataframe(data, rm_initial_pos, ticker_name)
+                if processed_df is not None:
+                    if latest_only:
+                        if not processed_df.empty:
+                            all_signals_dict[ticker_name] = processed_df.iloc[[-1]].copy()
+                    else:
+                        all_signals_dict[ticker_name] = processed_df
+
+            return all_signals_dict # Return the dictionary of results
+
+        except DataRetrievalError as e:
+            self.logger.error(f"Data retrieval failed during signal generation: {e}")
+            return {}
+        except ValueError as e: # Catch validation errors (e.g., from __init__)
+             self.logger.error(f"Configuration or parameter error: {e}")
+             raise # Re-raise config errors as they indicate setup problems
+        except Exception as e:
+            self.logger.exception(f"Unexpected error generating signals for {ticker}: {e}") # Log full traceback
+            return {} # Return empty dict on unexpected errors
+
+
+    def _process_dataframe(self, df_input: pd.DataFrame, initial_pos: int, ticker_id: str) -> Optional[pd.DataFrame]:
+        """
+        Internal helper to process a single ticker's DataFrame (calculate signals, apply RM, finalize).
+
+        Args:
+            df_input (pd.DataFrame): DataFrame for one ticker with DatetimeIndex.
+            initial_pos (int): Initial position for this ticker.
+            ticker_id (str): Identifier for logging.
+
+        Returns:
+            Optional[pd.DataFrame]: Processed DataFrame or None if processing fails.
+        """
+        # 1. Calculate indicators and raw signals ('signal' column)
+        signals_indicators = self._calculate_signals_single(df_input)
+        if signals_indicators.empty:
+            self.logger.warning(f"Signal calculation failed or returned empty for {ticker_id}. Skipping.")
+            return None
+
+        # 2. Apply Risk Management
+        try:
+            # Ensure all required columns are present for RM
+            required_rm_cols = ['signal', 'open', 'high', 'low', 'close']
+            if not all(col in signals_indicators.columns for col in required_rm_cols):
+                missing = [col for col in required_rm_cols if col not in signals_indicators.columns]
+                self.logger.error(f"DataFrame for {ticker_id} missing columns required by RiskManager: {missing}. Skipping.")
+                return None
+
+            rm_results = self.risk_manager.apply(signals_indicators[required_rm_cols + ['volume']], initial_pos) # Pass volume if needed downstream
+            if rm_results.empty: # Check if RM returned empty
+                 self.logger.warning(f"RiskManager returned empty DataFrame for {ticker_id}. Skipping.")
+                 return None
+        except Exception as rm_err:
+            self.logger.error(f"RiskManager failed for {ticker_id}: {rm_err}", exc_info=True)
+            return None
+
+        # 3. Combine results, rename RM columns, add back indicators/strength
+        # Start with RM results, which should have the correct index
+        final_df = rm_results.rename(columns={
+            'return': 'rm_strategy_return',
+            'cumulative_return': 'rm_cumulative_return',
+            'exit_type': 'rm_action'
+            # 'signal' column name is preserved correctly by RM and is the core signal
+        })
+
+        # Join back indicators and strength calculated earlier, aligning on index
+        indicator_cols = ['macd', 'signal_line', 'histogram', 'signal_strength']
+        final_df = final_df.join(signals_indicators[indicator_cols], how='left')
+
+        # 4. Calculate auxiliary returns based on final RM position
+        try:
+             # Ensure 'close' and 'position' columns are present after RM and join
+             if 'close' not in final_df.columns or 'position' not in final_df.columns:
+                  raise KeyError("Missing 'close' or 'position' column after risk management.")
+
+             final_df['daily_return'] = final_df['close'].pct_change().fillna(0)
+             final_df['strategy_return'] = final_df['daily_return'] * final_df['position'].shift(1).fillna(0)
+        except Exception as aux_calc_err:
+             self.logger.error(f"Failed to calculate auxiliary returns for {ticker_id}: {aux_calc_err}")
+             # Decide if this is critical - perhaps return df without these? For now, treat as failure.
+             return None
+
+        # 5. Ensure all expected columns are present in the final output
+        expected_final_cols = [
+            'open', 'high', 'low', 'close', 'volume', 'macd', 'signal_line',
+            'histogram', 'signal', 'signal_strength', 'position', 'daily_return',
+            'strategy_return', 'rm_strategy_return', 'rm_cumulative_return', 'rm_action'
+        ]
+        missing_final = [col for col in expected_final_cols if col not in final_df.columns]
+        if missing_final:
+            self.logger.warning(f"Final DataFrame for {ticker_id} is missing expected columns: {missing_final}. Adding as NaN.")
+            for col in missing_final:
+                 final_df[col] = np.nan # Add missing columns
+
+        return final_df[expected_final_cols].copy() # Return selected columns in standard order
