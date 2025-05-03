@@ -179,8 +179,8 @@ class MACDStrategy(BaseStrategy):
         below = df['macd'] < df['signal_line']
         # Use fillna(False) for the first comparison after shift
         # Adding explicit type casting to potentially mitigate FutureWarning if it persists
-        above_shifted = above.shift(1).fillna(False).astype(bool)
-        below_shifted = below.shift(1).fillna(False).astype(bool)
+        above_shifted = above.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
+        below_shifted = below.shift(1).fillna(False).infer_objects(copy=False).astype(bool)
         cross_up = above & (~above_shifted)
         cross_down = below & (~below_shifted)
 

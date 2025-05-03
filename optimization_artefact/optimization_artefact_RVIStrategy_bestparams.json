@@ -1,0 +1,8 @@
+{
+    "long_only": true,
+    "lookback": 16.0,
+    "signal_strength_window": 20.0,
+    "stop_loss_pct": 0.06502976129112242,
+    "take_profit_pct": 0.07152692063337346,
+    "trailing_stop_pct": 0.0739941970555948
+}
