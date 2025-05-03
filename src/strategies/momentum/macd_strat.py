@@ -234,7 +234,7 @@ class MACDStrategy(BaseStrategy):
                                      DatetimeIndex. Returns empty dict on error.
                                      See class docstring for column details.
         """
-        all_signals_dict = {} # Dictionary to store final results per ticker
+        all_signals = [] # List to store pandas dataframes
         try:
             # --- Data Retrieval ---
             # Calculate buffer needed for stable indicators and RM lookback
@@ -286,11 +286,12 @@ class MACDStrategy(BaseStrategy):
                     self.logger.debug(f"Processing {ticker_name}...")
                     processed_df = self._process_dataframe(group_data_dt_idx, initial_position, ticker_name)
                     if processed_df is not None:
+                         processed_df['ticker'] = ticker_name
                          if latest_only:
                              if not processed_df.empty:
-                                 all_signals_dict[ticker_name] = processed_df.iloc[[-1]].copy()
+                                 all_signals.append(processed_df.iloc[[-1]].copy())
                          else:
-                             all_signals_dict[ticker_name] = processed_df
+                             all_signals.append(processed_df)
             else:
                 # Process single ticker (data already has DatetimeIndex)
                 ticker_name = ticker if isinstance(ticker, str) else ticker[0]
@@ -305,13 +306,18 @@ class MACDStrategy(BaseStrategy):
 
                 processed_df = self._process_dataframe(data, rm_initial_pos, ticker_name)
                 if processed_df is not None:
-                    if latest_only:
-                        if not processed_df.empty:
-                            all_signals_dict[ticker_name] = processed_df.iloc[[-1]].copy()
-                    else:
-                        all_signals_dict[ticker_name] = processed_df
-
-            return all_signals_dict # Return the dictionary of results
+                        processed_df['ticker'] = ticker_name
+                        if latest_only:
+                            if not processed_df.empty:
+                                all_signals.append(processed_df.iloc[[-1]].copy())
+                        else:
+                            all_signals.append(processed_df)
+            signals_df = pd.concat(all_signals)
+            # Method 1: Reset index first, then set new MultiIndex (Often cleaner)
+            df_reset = signals_df.reset_index() # 'date' becomes a regular column
+            # Now set the MultiIndex using the 'ticker' and 'date' columns
+            df_multi_index = df_reset.set_index(['ticker', 'date'])
+            return df_multi_index # Return the dictionary of results
 
         except DataRetrievalError as e:
             self.logger.error(f"Data retrieval failed during signal generation: {e}")

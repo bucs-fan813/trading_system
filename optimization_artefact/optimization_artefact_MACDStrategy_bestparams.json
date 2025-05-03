@@ -1,0 +1,9 @@
+{
+    "fast": 11.0,
+    "long_only": false,
+    "slow": 28.0,
+    "smooth": 6.0,
+    "stop_loss_pct": 0.019152543524726118,
+    "take_profit_pct": 0.14984644964019705,
+    "trailing_stop_pct": 0.05420599799478848
+}
