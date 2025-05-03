@@ -109,7 +109,7 @@ class SMAStrategy(BaseStrategy):
 
     def generate_signals(
         self,
-        tickers: Union[str, List[str]],
+        ticker: Union[str, List[str]],
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         initial_position: int = 0,
@@ -138,16 +138,16 @@ class SMAStrategy(BaseStrategy):
         # Latest signal mode: use a minimal lookback window
         if latest_only:
             lookback = self.long_window + 2
-            if isinstance(tickers, str):
-                df = self.get_historical_prices(tickers, lookback=lookback)
+            if isinstance(ticker, str):
+                df = self.get_historical_prices(ticker, lookback=lookback)
                 if not self._validate_data(df, min_records=lookback):
-                    self.logger.error(f"Insufficient data for ticker {tickers}")
+                    self.logger.error(f"Insufficient data for ticker {ticker}")
                     return pd.DataFrame()
                 signals = self._calculate_smas_and_signals(df)
                 latest_signal = signals.iloc[-1:]
                 return latest_signal[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
             else:
-                df = self.get_historical_prices(tickers, lookback=lookback)
+                df = self.get_historical_prices(ticker, lookback=lookback)
                 if df.empty:
                     return pd.DataFrame()
                 def latest_per_ticker(group):
@@ -160,10 +160,10 @@ class SMAStrategy(BaseStrategy):
                 return latest_signals[['signal', 'strength', 'close', 'high', 'low', 'short_sma', 'long_sma']]
         else:
             # Backtesting mode: retrieve full historical prices within the specified date range.
-            if isinstance(tickers, str):
-                df = self.get_historical_prices(tickers, from_date=start_date, to_date=end_date)
+            if isinstance(ticker, str):
+                df = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
                 if not self._validate_data(df, min_records=self.long_window + 1):
-                    self.logger.error(f"Insufficient data for ticker {tickers}")
+                    self.logger.error(f"Insufficient data for ticker {ticker}")
                     return pd.DataFrame()
                 signals = self._calculate_smas_and_signals(df)
                 risk_manager = RiskManager(
@@ -175,7 +175,7 @@ class SMAStrategy(BaseStrategy):
                 )
                 return risk_manager.apply(signals, initial_position)
             else:
-                df = self.get_historical_prices(tickers, from_date=start_date, to_date=end_date)
+                df = self.get_historical_prices(ticker, from_date=start_date, to_date=end_date)
                 if df.empty:
                     return pd.DataFrame()
                 risk_manager = RiskManager(

@@ -192,6 +192,12 @@ class StrategyOptimizer:
         """
         try:
             logger.debug(f"Generating signals for fold: {fold_start.date()} to {fold_end.date()}")
+            
+            print(self.tickers)
+            print(fold_start.strftime("%Y-%m-%d"))
+            print(fold_end.strftime("%Y-%m-%d"))
+            print(self.initial_position)
+            
             df_signals_raw = strategy_instance.generate_signals(
                 ticker=self.tickers, # Pass the list of tickers
                 start_date=fold_start.strftime("%Y-%m-%d"),
