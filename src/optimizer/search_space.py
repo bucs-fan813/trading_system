@@ -450,8 +450,8 @@ adx_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Consider both long and short for complete evaluation
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Indian markets can be volatile, especially small caps
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Balanced risk-reward ratio
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Indian markets can be volatile, especially small caps
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Balanced risk-reward ratio
     'trailing_stop_pct': hp.choice('trailing_stop_pct', [
         0.0, # Explicitly include 0 (disabled)
         hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
