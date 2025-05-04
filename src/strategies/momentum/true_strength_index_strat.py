@@ -3,380 +3,348 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, Union, List, Tuple
+
+# Assuming these imports are correct relative to the project structure
 from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.strategies.risk_management import RiskManager
+from src.database.config import DatabaseConfig # Added for type hinting __init__
 
 class TSIStrategy(BaseStrategy):
     """
     True Strength Index (TSI) Strategy with Integrated Risk Management.
-    
-    Mathematical Explanation:
-    
-        Given the closing price series, first compute the price change:
-            Δ = close.diff()
-    
-        Perform two levels of exponential smoothing:
-            double_smoothed = EMA(EMA(Δ, span=long_period), span=short_period)
-            abs_double_smoothed = EMA(EMA(|Δ|, span=long_period), span=short_period)
-    
-        The True Strength Index (TSI) is defined by:
-            TSI = 100 * (double_smoothed / (abs_double_smoothed + 1e-10))
-    
-        The signal line is computed as the exponential moving average (EMA) of TSI:
-            signal_line = EMA(TSI, span=signal_period)
-    
-        Trading signals are generated via crossovers:
-            - A bullish (buy) signal (+1) when TSI crosses above the signal line.
-            - A bearish (sell) signal (-1) when TSI crosses below the signal line.
-              In "long only" mode, sell signals are overridden to 0.
-    
+
+    Calculates the TSI indicator and generates trading signals based on crossovers
+    between the TSI line and its signal line. Applies risk management rules
+    (stop-loss, take-profit, trailing stop) using the RiskManager component.
+
+    Indicator Logic:
+        1. Calculate price change: delta = close.diff()
+        2. Double Smooth delta: pc_ema1 = EMA(delta, long_period)
+                                pc_ema2 = EMA(pc_ema1, short_period)
+        3. Double Smooth absolute delta: abs_pc_ema1 = EMA(abs(delta), long_period)
+                                         abs_pc_ema2 = EMA(abs_pc_ema1, short_period)
+        4. TSI = 100 * (pc_ema2 / (abs_pc_ema2 + epsilon))
+        5. Signal Line = EMA(TSI, signal_period)
+        6. Raw Signal: +1 if TSI crosses above Signal Line, -1 if below.
+           (Adjusted to 0 for sell signals if long_only=True).
+
     Risk Management:
-    
-        The strategy then applies risk management using the RiskManager, which:
-            - Adjusts the entry price to account for slippage and transaction costs.
-            - Sets stop-loss and take-profit thresholds.
-            - Identifies exit events (stop-loss, take-profit, or signal reversal).
-            - Computes the realized trade returns and cumulative return.
-    
-    Outputs:
-    
-        A DataFrame with the following columns:
-            - 'tsi': Computed True Strength Index.
-            - 'signal_line': Smoothed TSI serving as the signal line.
-            - 'strength': The difference (TSI - signal_line).
-            - 'signal': Trading signal (1 for buy, -1 for sell, 0 for none).
-            - 'position': Risk-managed position.
-            - 'return': Realized return when an exit is triggered.
-            - 'cumulative_return': Cumulative return from closed trades.
-            - 'exit_type': Reason for exit (e.g., stop_loss, take_profit, signal_exit, none).
-            - 'close', 'high', 'low': Price data used for entry and risk management.
-    
-        In a multi-ticker scenario, the DataFrame is indexed by both ticker and date.
-    
-    Parameters in `params` (with defaults):
-        - long_period (int): First smoothing period (default: 25)
-        - short_period (int): Second smoothing period (default: 13)
-        - signal_period (int): Period for the signal line (default: 12)
-        - stop_loss_pct (float): Stop loss percentage (default: 0.05)
-        - take_profit_pct (float): Take profit percentage (default: 0.10)
-        - trailing_stop_pct (float): Trailing stop percentage (default: 0.00)
-        - slippage_pct (float): Slippage percentage (default: 0.001)
-        - transaction_cost_pct (float): Transaction cost percentage (default: 0.001)
-        - long_only (bool): If True, only long positions are allowed (default: True)
-        - min_data_points (int): Minimum required data points (default: long_period + short_period + signal_period)
-    
-    Args:
-        db_config (DatabaseConfig): Database configuration instance.
-        params (dict, optional): Dictionary of strategy parameters.
+        - Applied sequentially after raw signal generation using RiskManager.
+        - Computes risk-adjusted positions, returns, and exit reasons.
+
+    Output DataFrame Columns:
+        - open, high, low, close: Original price data.
+        - tsi: True Strength Index value.
+        - signal_line: EMA of TSI.
+        - strength: Difference between TSI and signal line.
+        - signal: Raw trading signal (1, -1, 0) based on crossover.
+        - position: Risk-managed position (-1, 0, 1).
+        - return: Realized return from RiskManager on trade closure.
+        - cumulative_return: Cumulative return from RiskManager.
+        - exit_type: Reason for exit from RiskManager.
+        - ticker: Included if multiple tickers are processed.
+
+    Required Parameters in `params` dict:
+        - long_period (int): Period for the first EMA smoothing (default: 25).
+        - short_period (int): Period for the second EMA smoothing (default: 13).
+        - signal_period (int): Period for the TSI signal line EMA (default: 12).
+        - long_only (bool): If True, suppress short signals (default: True).
+        - stop_loss_pct (float): Stop loss percentage (default: 0.05).
+        - take_profit_pct (float): Take profit percentage (default: 0.10).
+        - trailing_stop_pct (float): Trailing stop percentage (0 to disable, default: 0.0).
+        - slippage_pct (float): Slippage cost per transaction (default: 0.001).
+        - transaction_cost_pct (float): Transaction cost per transaction (default: 0.001).
     """
-    
-    def __init__(self, db_config, params: Optional[Dict] = None):
+
+    def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the TSIStrategy with database configuration and strategy parameters.
-        
+        Initialize the TSIStrategy.
+
         Args:
-            db_config: Database configuration settings used to initialize the DB engine.
-            params (dict, optional): Dictionary of strategy parameters.
+            db_config (DatabaseConfig): Database configuration object.
+            params (dict, optional): Dictionary of strategy and risk parameters.
         """
-        super().__init__(db_config, params)
-        
-        self.long_period = int(self.params.get('long_period', 25))
-        self.short_period = int(self.params.get('short_period', 13))
-        self.signal_period = int(self.params.get('signal_period', 12))
-        required_min = self.long_period + self.short_period + self.signal_period
-        self.min_data_points = int(self.params.get('min_data_points', required_min))
-        
-        self.stop_loss_pct = float(self.params.get('stop_loss_pct', 0.05))
-        self.take_profit_pct = float(self.params.get('take_profit_pct', 0.10))
-        self.trailing_stop_pct = float(self.params.get('trailing_stop_pct', 0.00))
-        self.slippage_pct = float(self.params.get('slippage_pct', 0.001))
-        self.transaction_cost_pct = float(self.params.get('transaction_cost_pct', 0.001))
-        self.long_only = bool(self.params.get('long_only', True))
-        
-        self._validate_parameters()
-        self.risk_manager = self._create_risk_manager()
+        default_params = {
+            'long_period': 25,
+            'short_period': 13,
+            'signal_period': 12,
+            'long_only': True,
+            'stop_loss_pct': 0.05,
+            'take_profit_pct': 0.10,
+            'trailing_stop_pct': 0.0,
+            'slippage_pct': 0.001,
+            'transaction_cost_pct': 0.001
+        }
+        # Ensure params is a dict, handle potential None input
+        params = params if params is not None else {}
+        # Merge provided params with defaults, prioritizing provided ones
+        merged_params = {**default_params, **params}
+
+        super().__init__(db_config, merged_params) # Pass merged params to BaseStrategy
+
+        # --- Strategy Parameters ---
+        self.long_period = int(self.params['long_period'])
+        self.short_period = int(self.params['short_period'])
+        self.signal_period = int(self.params['signal_period'])
+        self.long_only = bool(self.params['long_only'])
+
+        # --- Risk Parameters (passed to RiskManager) ---
+        risk_params = {
+            'stop_loss_pct': float(self.params['stop_loss_pct']),
+            'take_profit_pct': float(self.params['take_profit_pct']),
+            'trailing_stop_pct': float(self.params['trailing_stop_pct']),
+            'slippage_pct': float(self.params['slippage_pct']),
+            'transaction_cost_pct': float(self.params['transaction_cost_pct'])
+        }
+
+        self._validate_parameters() # Validate periods and risk params
+
+        # --- Components ---
+        self.risk_manager = RiskManager(**risk_params)
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def generate_signals(self, ticker: Union[str, List[str]], 
-                         start_date: Optional[str] = None,
-                         end_date: Optional[str] = None,
-                         initial_position: int = 0,
-                         latest_only: bool = False) -> pd.DataFrame:
-        """
-        Generate trading signals with integrated risk management for given tickers.
-        
-        This function retrieves historical price data for one or more tickers, computes the TSI and its signal line,
-        generates trading signals based on crossovers, applies risk management rules (stop-loss, take-profit, and
-        signal-based exits), and outputs a complete DataFrame for backtesting and forecasting.
-        
-        Args:
-            tickers (str or List[str]): Stock ticker symbol or list of symbols.
-            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-            initial_position (int): Starting market position (0 for none, 1 for long, -1 for short).
-            latest_only (bool): If True, returns only the latest available signal row (for forecasting).
-        
-        Returns:
-            pd.DataFrame: DataFrame containing the following columns:
-                'tsi', 'signal_line', 'strength', 'signal', 'position', 'return',
-                'cumulative_return', 'exit_type', 'close', 'high', 'low'.
-                
-            In multi-ticker mode, the DataFrame is indexed by both ticker and date.
-        
-        Raises:
-            DataRetrievalError: If the historical price data for any ticker is insufficient.
-        """
-        self.logger.info(f"Processing tickers {ticker} from {start_date} to {end_date}")
-        # Retrieve validated historical prices (supports single or multiple tickers)
-        prices = self._get_validated_prices(ticker, start_date, end_date)
-        
-        # Calculate raw signals with TSI parameters (vectorized per ticker)
-        raw_signals = self._calculate_signals(prices)
-        
-        # Apply risk management rules to the signals
-        risk_df = self._apply_risk_management(raw_signals, initial_position)
-        
-        # Join the risk management outputs with the raw signals to combine all metrics
-        combined = raw_signals.join(risk_df[['position', 'return', 'cumulative_return', 'exit_type']], how='left')
-        
-        # Final data ordering
-        final_df = self._finalize_output(combined, latest_only)
-        return final_df
+        # Calculate required lookback buffer (sum of periods for full calculation + safety margin)
+        # Similar approach to AwesomeOscillator lookback calculation
+        self.lookback_buffer = 2 * (self.long_period + self.short_period + self.signal_period)
+        # Minimum records required *after* lookback for calculation stability
+        self.min_calculation_records = self.long_period + self.short_period + self.signal_period
 
     def _validate_parameters(self):
-        """
-        Validate that strategy and risk parameters are positive (or non-negative as applicable).
-        
-        Raises:
-            ValueError: If any period parameter is non-positive or risk parameter is negative.
-        """
-        if any(p <= 0 for p in [self.long_period, self.short_period, self.signal_period]):
-            raise ValueError("All period parameters must be positive integers")
-        if any(p < 0 for p in [self.stop_loss_pct, self.take_profit_pct, self.slippage_pct, self.transaction_cost_pct]):
-            raise ValueError("Risk parameters must be non-negative")
+        """Validate strategy and risk parameters."""
+        if not (self.long_period > 0 and self.short_period > 0 and self.signal_period > 0):
+            raise ValueError("All TSI period parameters (long, short, signal) must be positive integers.")
+        # RiskManager already validates its parameters, but adding basic checks here too
+        if any(self.params[p] < 0 for p in ['stop_loss_pct', 'take_profit_pct', 'trailing_stop_pct', 'slippage_pct', 'transaction_cost_pct']):
+             raise ValueError("Risk management percentages (stops, costs) cannot be negative.")
 
-    def _create_risk_manager(self) -> RiskManager:
-        """
-        Create and return an instance of the RiskManager with configured risk parameters.
-        
-        Returns:
-            RiskManager: Configured risk management instance.
-        """
-        return RiskManager(
-            stop_loss_pct=self.stop_loss_pct,
-            take_profit_pct=self.take_profit_pct,
-            trailing_stop_pct=self.trailing_stop_pct,
-            slippage_pct=self.slippage_pct,
-            transaction_cost_pct=self.transaction_cost_pct
-        )
 
-    def _get_validated_prices(self, ticker: Union[str, List[str]], 
-                              start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+    def generate_signals(self,
+                         ticker: Union[str, List[str]],
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None,
+                         initial_position: Union[int, Dict[str, int]] = 0, # Allow dict for multi-ticker
+                         latest_only: bool = False) -> pd.DataFrame:
         """
-        Retrieve and validate historical price data from the database based on provided date range.
-        
-        In multi-ticker mode, ensures each ticker has at least the minimum required number of data points.
-        The resulting DataFrame is sorted by date (and ticker if applicable).
-        
+        Generates trading signals and applies risk management.
+
+        Fetches data, calculates TSI indicators and raw signals, applies the
+        RiskManager, and returns a DataFrame compatible with the optimization framework.
+
         Args:
-            tickers (str or List[str]): Stock ticker symbol(s).
-            start_date (str): Start date in 'YYYY-MM-DD' format.
-            end_date (str): End date in 'YYYY-MM-DD' format.
-        
-        Returns:
-            pd.DataFrame: Historical price data sorted by date (and ticker for multiple tickers).
-        
-        Raises:
-            DataRetrievalError: If any ticker has insufficient data for analysis.
-        """
-        prices = self.get_historical_prices(
-            ticker,
-            from_date=start_date,
-            to_date=end_date,
-            data_source='yfinance'
-        )
-        
-        if isinstance(prices.index, pd.MultiIndex):
-            insufficient = []
-            for ticker, group in prices.groupby(level=0):
-                if len(group) < self.min_data_points:
-                    insufficient.append(ticker)
-            if insufficient:
-                raise DataRetrievalError(f"Insufficient data for tickers: {insufficient}")
-        else:
-            if not self._validate_data(prices, self.min_data_points):
-                raise DataRetrievalError("Insufficient data for analysis")
-        
-        # Ensure data is sorted by date (or ticker and date if multi-ticker)
-        return prices.sort_index()
+            ticker (Union[str, List[str]]): Ticker symbol or list of symbols.
+            start_date (str, optional): Start date ('YYYY-MM-DD').
+            end_date (str, optional): End date ('YYYY-MM-DD').
+            initial_position (Union[int, Dict[str, int]]): Starting position(s).
+                                                          Int for single/all, Dict for per-ticker.
+            latest_only (bool): If True, return only the last row per ticker.
 
-    def _calculate_signals(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate the True Strength Index (TSI), signal line, and generate trading signals.
-        
-        In single-ticker mode, processes the entire DataFrame; in multi-ticker mode, groups data by ticker 
-        and applies the computation individually, then recombines into a single DataFrame.
-        
-        Args:
-            prices (pd.DataFrame): Historical price data containing at least 'close', 'high', and 'low'.
-        
         Returns:
-            pd.DataFrame: DataFrame with computed columns 'tsi', 'signal_line', 'strength', and 'signal',
-                          along with price columns 'close', 'high', and 'low'. In multi-ticker mode, the index 
-                          is a MultiIndex (ticker, date).
+            pd.DataFrame: DataFrame with prices, indicators, signals, and
+                          risk management outputs. Indexed by DatetimeIndex (single)
+                          or MultiIndex ['ticker', 'date'] (multiple).
+
+        Raises:
+            DataRetrievalError: If data fetching fails or data is insufficient.
+            ValueError: If parameters are invalid.
         """
-        if isinstance(prices.index, pd.MultiIndex):
-            # Process each ticker group individually
-            grouped = prices.groupby(level=0)
-            result_list = []
-            for ticker, group in grouped:
-                signals = self._calculate_signals_single(group.droplevel(0))
-                # Create a MultiIndex with ticker and date
-                signals.index = pd.MultiIndex.from_product([[ticker], signals.index])
-                result_list.append(signals)
-            return pd.concat(result_list).sort_index()
-        else:
-            return self._calculate_signals_single(prices)
+        self.logger.info(f"Generating TSI signals for {ticker} from {start_date} to {end_date}")
+
+        try:
+            # 1. Fetch Data with Lookback Buffer
+            # Use get_historical_prices from BaseStrategy
+            prices_df = self.get_historical_prices(
+                tickers=ticker,
+                from_date=start_date,
+                to_date=end_date,
+                lookback=self.lookback_buffer # Use calculated lookback
+            )
+
+            if prices_df.empty:
+                self.logger.warning(f"No price data found for {ticker} in the given range/lookback.")
+                return pd.DataFrame()
+
+            # 2. Process Single or Multiple Tickers
+            results_list = []
+            is_multi_ticker = isinstance(ticker, list) and len(ticker) > 1
+
+            if is_multi_ticker:
+                # Ensure input was MultiIndex or handle DataFrame with 'ticker' column if needed
+                if not isinstance(prices_df.index, pd.MultiIndex):
+                     # This case might occur if get_historical_prices logic changes, add safety check
+                     if 'ticker' not in prices_df.columns:
+                         raise ValueError("Multi-ticker price data lacks MultiIndex and 'ticker' column.")
+                     # If 'ticker' column exists, set MultiIndex (ticker, date)
+                     prices_df['date'] = pd.to_datetime(prices_df['date']) # Ensure date is datetime
+                     prices_df = prices_df.set_index(['ticker', 'date']).sort_index()
+                     if not isinstance(prices_df.index, pd.MultiIndex): # Check conversion
+                          raise ValueError("Failed to set MultiIndex for multi-ticker data.")
+
+
+                initial_positions_dict = initial_position if isinstance(initial_position, dict) else {ticker: initial_position for ticker in ticker}
+
+                for ticker_name, group_df in prices_df.groupby(level=0):
+                    self.logger.debug(f"Processing ticker: {ticker_name}")
+                    # Drop the ticker level for processing, index becomes DatetimeIndex
+                    single_ticker_df = group_df.droplevel(0)
+
+                    # Validate data length for this specific ticker
+                    if not self._validate_data(single_ticker_df, min_records=self.min_calculation_records):
+                        self.logger.warning(f"Insufficient data for {ticker_name} after lookback ({len(single_ticker_df)} < {self.min_calculation_records}). Skipping.")
+                        continue
+
+                    # Calculate signals for this ticker
+                    signals_calculated = self._calculate_signals_single(single_ticker_df)
+
+                    # Apply Risk Management
+                    ticker_initial_pos = initial_positions_dict.get(ticker_name, 0) # Get specific initial pos
+                    rm_applied = self.risk_manager.apply(signals_calculated, ticker_initial_pos)
+
+                    # Add ticker identifier back for concatenation
+                    rm_applied['ticker'] = ticker_name
+                    results_list.append(rm_applied)
+
+                if not results_list:
+                    self.logger.warning("No tickers had sufficient data or produced results.")
+                    return pd.DataFrame()
+
+                # Combine results and set MultiIndex
+                final_df = pd.concat(results_list)
+                final_df['date'] = final_df.index # Index is date, move to column
+                final_df['date'] = pd.to_datetime(final_df['date'])
+                final_df = final_df.set_index(['ticker', 'date']).sort_index()
+
+            else: # Single Ticker
+                ticker_name = ticker if isinstance(ticker, str) else ticker[0]
+                self.logger.debug(f"Processing single ticker: {ticker_name}")
+
+                # Validate data length
+                if not self._validate_data(prices_df, min_records=self.min_calculation_records):
+                    self.logger.warning(f"Insufficient data for {ticker_name} after lookback ({len(prices_df)} < {self.min_calculation_records}).")
+                    return pd.DataFrame() # Return empty if not enough data
+
+                # Calculate signals
+                signals_calculated = self._calculate_signals_single(prices_df)
+
+                # Apply Risk Management
+                single_initial_pos = initial_position if isinstance(initial_position, int) else initial_position.get(ticker_name, 0)
+                final_df = self.risk_manager.apply(signals_calculated, single_initial_pos)
+
+
+            # 3. Final Output Handling
+            if latest_only:
+                if is_multi_ticker:
+                     # Check if index is MultiIndex before grouping
+                    if isinstance(final_df.index, pd.MultiIndex):
+                        return final_df.groupby(level=0).tail(1)
+                    else:
+                         # Should not happen if multi-ticker logic is correct, but fallback
+                         return final_df.iloc[[-1]]
+                else:
+                    return final_df.iloc[[-1]]
+            else:
+                # Ensure correct column order (adjust as needed for compatibility)
+                # Keep RM outputs as they are named: 'position', 'return', 'cumulative_return', 'exit_type'
+                # Required by framework: 'close', 'signal', 'position'
+                # Useful info: 'open', 'high', 'low', TSI indicators, RM return/cum_return/exit_type
+                output_cols = [
+                    'open', 'high', 'low', 'close', # Prices
+                    'tsi', 'signal_line', 'strength', # Indicators
+                    'signal', # Raw signal
+                    'position', 'return', 'cumulative_return', 'exit_type' # RM Output
+                ]
+                # Ensure all expected columns exist, add NaN if missing (shouldn't happen ideally)
+                for col in output_cols:
+                     if col not in final_df.columns:
+                          final_df[col] = np.nan
+                return final_df[output_cols]
+
+        except DataRetrievalError as e:
+            self.logger.error(f"Data retrieval error for {ticker}: {e}")
+            raise # Re-raise specific error
+        except ValueError as e:
+            self.logger.error(f"Parameter validation error: {e}")
+            raise # Re-raise specific error
+        except Exception as e:
+            self.logger.error(f"Unexpected error generating signals for {ticker}: {e}", exc_info=True)
+            # Return empty DataFrame on unexpected errors
+            return pd.DataFrame()
+
 
     def _calculate_signals_single(self, prices: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute TSI and generate trading signals for a single ticker.
-        
-        Args:
-            prices (pd.DataFrame): Historical price data for a single ticker, indexed by date.
-        
-        Returns:
-            pd.DataFrame: DataFrame with 'tsi', 'signal_line', 'strength', 'signal', 'close', 'high', and 'low' columns.
-        """
-        close = prices['close']
-        tsi, signal_line = self._calculate_tsi(close)
-        
-        signals = pd.DataFrame(index=prices.index)
-        signals['tsi'] = tsi
-        signals['signal_line'] = signal_line
-        signals['strength'] = tsi - signal_line
-        signals['signal'] = self._generate_crossover_signals(tsi, signal_line)
-        
-        if self.long_only:
-            signals.loc[signals['signal'] == -1, 'signal'] = 0  # Force sell signals to 0 in long-only mode
-        
-        signals[['close', 'high', 'low']] = prices[['close', 'high', 'low']]
-        return signals
+        Compute TSI indicators and raw signal for a single ticker's price data.
 
-    def _calculate_tsi(self, close: pd.Series) -> tuple[pd.Series, pd.Series]:
+        Args:
+            prices (pd.DataFrame): DataFrame with 'open', 'high', 'low', 'close' columns,
+                                   indexed by DatetimeIndex for a single ticker.
+
+        Returns:
+            pd.DataFrame: DataFrame containing OHLC, TSI indicators ('tsi', 'signal_line',
+                          'strength'), and the raw 'signal' (1, -1, 0). Ready for RiskManager.
         """
-        Compute the True Strength Index (TSI) and its smoothed signal line.
-        
-        The TSI is computed using double exponential smoothing of the price change (delta):
-            - delta = close.diff()
-            - double_smoothed = EMA(EMA(delta, span=long_period), span=short_period)
-            - abs_double_smoothed = EMA(EMA(|delta|, span=long_period), span=short_period)
-            - tsi = 100 * (double_smoothed / (abs_double_smoothed + 1e-10))
-    
-        The signal line is the EMA of TSI over `signal_period`.
-        
+        if not isinstance(prices.index, pd.DatetimeIndex):
+             # This check is important as RM expects DatetimeIndex for single ticker
+             raise TypeError(f"_calculate_signals_single expects DataFrame with DatetimeIndex, got {type(prices.index)}")
+
+        df = prices.copy() # Work on a copy
+
+        # Calculate TSI and Signal Line
+        df['tsi'], df['signal_line'] = self._calculate_tsi(df['close'])
+
+        # Calculate Strength
+        df['strength'] = df['tsi'] - df['signal_line']
+
+        # Generate Raw Crossover Signals
+        df['signal'] = 0 # Default to no signal
+        tsi_cross_above = (df['tsi'] > df['signal_line']) & (df['tsi'].shift(1) <= df['signal_line'].shift(1))
+        tsi_cross_below = (df['tsi'] < df['signal_line']) & (df['tsi'].shift(1) >= df['signal_line'].shift(1))
+
+        df.loc[tsi_cross_above, 'signal'] = 1
+        df.loc[tsi_cross_below, 'signal'] = -1
+
+        # Apply Long-Only Rule
+        if self.long_only:
+            df.loc[df['signal'] == -1, 'signal'] = 0 # Override sell signals to hold/exit
+
+        # Select and return columns required by RiskManager + indicators
+        # OHLC + signal are minimum for RM. Indicators are for context.
+        required_cols = ['open', 'high', 'low', 'close', 'signal',
+                         'tsi', 'signal_line', 'strength']
+
+        # Drop rows with NaNs produced during indicator calculation warmup
+        df.dropna(subset=['tsi', 'signal_line'], inplace=True) # Drop rows where TSI/signal couldn't be calculated
+
+        return df[required_cols]
+
+    def _calculate_tsi(self, close: pd.Series) -> Tuple[pd.Series, pd.Series]:
+        """
+        Calculates the True Strength Index (TSI) and its signal line.
+
         Args:
             close (pd.Series): Series of closing prices.
-        
+
         Returns:
-            tuple: (tsi, signal_line) as two pandas Series.
+            Tuple[pd.Series, pd.Series]: (tsi, signal_line)
         """
         delta = close.diff()
-        double_smoothed = delta.ewm(span=self.long_period, adjust=False).mean().ewm(span=self.short_period, adjust=False).mean()
-        abs_double_smoothed = delta.abs().ewm(span=self.long_period, adjust=False).mean().ewm(span=self.short_period, adjust=False).mean()
-        
-        tsi = 100 * (double_smoothed / (abs_double_smoothed + 1e-10))
+        # First smoothing (long period)
+        ema1 = delta.ewm(span=self.long_period, adjust=False).mean()
+        abs_ema1 = delta.abs().ewm(span=self.long_period, adjust=False).mean()
+        # Second smoothing (short period)
+        ema2 = ema1.ewm(span=self.short_period, adjust=False).mean()
+        abs_ema2 = abs_ema1.ewm(span=self.short_period, adjust=False).mean()
+
+        # TSI Calculation (add epsilon for numerical stability)
+        epsilon = 1e-10
+        tsi = 100 * (ema2 / (abs_ema2 + epsilon))
+
+        # Signal Line Calculation
         signal_line = tsi.ewm(span=self.signal_period, adjust=False).mean()
+
         return tsi, signal_line
 
-    def _generate_crossover_signals(self, tsi: pd.Series, signal_line: pd.Series) -> pd.Series:
-        """
-        Generate trading signals based on TSI and signal line crossovers.
-        
-        A buy signal (+1) is triggered when TSI crosses above the signal line,
-        and a sell signal (-1) is triggered when TSI crosses below the signal line.
-        
-        Args:
-            tsi (pd.Series): TSI values.
-            signal_line (pd.Series): Smoothed TSI (signal line).
-        
-        Returns:
-            pd.Series: Series of trading signals (1 for buy, -1 for sell, 0 for no change).
-        """
-        above = tsi > signal_line
-        below = tsi < signal_line
-        
-        signals = pd.Series(0, index=tsi.index)
-        signals[(above & (above.shift(1) == False))] = 1
-        signals[(below & (below.shift(1) == False))] = -1
-        return signals
-
-    def _apply_risk_management(self, signals: pd.DataFrame, initial_position: int) -> pd.DataFrame:
-        """
-        Apply risk management to trading signals using the RiskManager component.
-        
-        In multi-ticker mode, processes each ticker group individually.
-        Risk management adjusts positions based on stop-loss, take-profit, and signal exit rules.
-        
-        Args:
-            signals (pd.DataFrame): DataFrame with columns 'signal', 'high', 'low', 'close' (plus TSI indicators).
-            initial_position (int): Starting position (0: no position, 1: long, -1: short).
-        
-        Returns:
-            pd.DataFrame: DataFrame with risk-managed columns including 'position', 'return', 
-                          'cumulative_return', and 'exit_type', with the same index as `signals`.
-        """
-        if isinstance(signals.index, pd.MultiIndex):
-            result_list = []
-            for ticker, group in signals.groupby(level=0):
-                # Remove ticker level for processing
-                group = group.droplevel(0)
-                rm_out = self.risk_manager.apply(group[['signal', 'high', 'low', 'close']], initial_position)
-                # Restore ticker level
-                rm_out.index = pd.MultiIndex.from_product([[ticker], rm_out.index])
-                result_list.append(rm_out)
-            return pd.concat(result_list).sort_index()
-        else:
-            return self.risk_manager.apply(signals[['signal', 'high', 'low', 'close']], initial_position)
-
-    def _finalize_output(self, df: pd.DataFrame, latest_only: bool) -> pd.DataFrame:
-        """
-        Finalize the output DataFrame by reordering columns to a standard format.
-        
-        The final DataFrame contains:
-            'tsi', 'signal_line', 'strength', 'signal', 'position', 
-            'return', 'cumulative_return', 'exit_type', 'close', 'high', 'low'
-        
-        Args:
-            df (pd.DataFrame): DataFrame with both indicator and risk management columns.
-            latest_only (bool): If True, only returns the most recent row for each ticker 
-                                (or overall for a single ticker).
-        
-        Returns:
-            pd.DataFrame: Finalized DataFrame ready for backtesting and performance analysis.
-        """
-        # Ensure all required columns are present
-        cols = ['tsi', 'signal_line', 'strength', 'signal', 'position', 
-                'return', 'cumulative_return', 'exit_type', 'close', 'high', 'low']
-        df = df[cols]
-        
-        if latest_only:
-            if isinstance(df.index, pd.MultiIndex):
-                latest = df.groupby(level=0).tail(1)
-            else:
-                latest = df.iloc[[-1]]
-            return latest
-        return df
-
     def __repr__(self) -> str:
-        """
-        Return a string representation of the TSIStrategy instance including key parameters.
-        
-        Returns:
-            str: A formatted string with parameter values.
-        """
-        return (f"TSIStrategy(long_period={self.long_period}, short_period={self.short_period}, "
-                f"signal_period={self.signal_period}, stop_loss_pct={self.stop_loss_pct}, "
-                f"take_profit_pct={self.take_profit_pct}, slippage_pct={self.slippage_pct}, "
-                f"transaction_cost_pct={self.transaction_cost_pct}, long_only={self.long_only})")
+        """Return a string representation of the strategy instance."""
+        param_str = ", ".join(f"{k}={v}" for k, v in self.params.items())
+        return f"{self.__class__.__name__}({param_str})"
