@@ -98,7 +98,7 @@ class TSIStrategy(BaseStrategy):
         self.risk_manager = self._create_risk_manager()
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def generate_signals(self, tickers: Union[str, List[str]], 
+    def generate_signals(self, ticker: Union[str, List[str]], 
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -127,9 +127,9 @@ class TSIStrategy(BaseStrategy):
         Raises:
             DataRetrievalError: If the historical price data for any ticker is insufficient.
         """
-        self.logger.info(f"Processing tickers {tickers} from {start_date} to {end_date}")
+        self.logger.info(f"Processing tickers {ticker} from {start_date} to {end_date}")
         # Retrieve validated historical prices (supports single or multiple tickers)
-        prices = self._get_validated_prices(tickers, start_date, end_date)
+        prices = self._get_validated_prices(ticker, start_date, end_date)
         
         # Calculate raw signals with TSI parameters (vectorized per ticker)
         raw_signals = self._calculate_signals(prices)
@@ -171,7 +171,7 @@ class TSIStrategy(BaseStrategy):
             transaction_cost_pct=self.transaction_cost_pct
         )
 
-    def _get_validated_prices(self, tickers: Union[str, List[str]], 
+    def _get_validated_prices(self, ticker: Union[str, List[str]], 
                               start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
         """
         Retrieve and validate historical price data from the database based on provided date range.
@@ -191,7 +191,7 @@ class TSIStrategy(BaseStrategy):
             DataRetrievalError: If any ticker has insufficient data for analysis.
         """
         prices = self.get_historical_prices(
-            tickers,
+            ticker,
             from_date=start_date,
             to_date=end_date,
             data_source='yfinance'
