@@ -433,11 +433,11 @@ true_strength_index_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),          # True for long-only, False for long-short
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.1),   # Stop loss percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.1),   # Stop loss percentage
     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15), # Take profit percentage
         'trailing_stop_pct': hp.choice('trailing_stop_pct', [
         0.0, # Explicitly include 0 (disabled)
-        hp.uniform('trailing_stop_pct_val', 0.03, 0.08) # Enable TSL within a range if chosen
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
     ]),  # Trailing stop percentage
 }
 
