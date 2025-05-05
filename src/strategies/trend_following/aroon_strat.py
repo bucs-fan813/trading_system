@@ -53,9 +53,9 @@ class AroonStrategy(BaseStrategy):
     """
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         super().__init__(db_config, params)
-        self.lookback = self.params.get('lookback', 25)
-        self.aroon_up_threshold = self.params.get('aroon_up_threshold', 70)
-        self.aroon_down_threshold = self.params.get('aroon_down_threshold', 30)
+        self.lookback = int(self.params.get('lookback', 25))
+        self.aroon_up_threshold = int(self.params.get('aroon_up_threshold', 70))
+        self.aroon_down_threshold = int(self.params.get('aroon_down_threshold', 30))
         self.long_only = self.params.get('long_only', True)
         self.risk_manager = RiskManager(
             stop_loss_pct=self.params.get('stop_loss_pct', 0.05),
@@ -97,7 +97,8 @@ class AroonStrategy(BaseStrategy):
         signal_strength = (aroon_osc.abs() / (osc_std + 1e-6)).fillna(0)
 
         # Apply smoothing if specified
-        signal_smoothing = self.params.get('signal_smoothing', 1)
+        signal_smoothing = int(self.params.get('signal_smoothing', 1))
+        print(f"Signal smoothing: {signal_smoothing}")
         if signal_smoothing > 1:
             aroon_up = aroon_up.rolling(window=signal_smoothing).mean()
             aroon_down = aroon_down.rolling(window=signal_smoothing).mean()
