@@ -82,9 +82,9 @@ class DonchianChannel(BaseStrategy):
 
         # If entry or exit lookback is not specified, use the overall lookback period.
         if default_params['entry_lookback'] is None:
-            default_params['entry_lookback'] = default_params['lookback_period']
+            default_params['entry_lookback'] = int(default_params['lookback_period'])
         if default_params['exit_lookback'] is None:
-            default_params['exit_lookback'] = default_params['lookback_period']
+            default_params['exit_lookback'] = int(default_params['lookback_period'])
 
         super().__init__(db_config, default_params)
 
@@ -129,9 +129,9 @@ class DonchianChannel(BaseStrategy):
         """
         # Define the minimum number of records needed to compute the rolling channels
         min_required = max(
-            self.params['lookback_period'],
-            self.params['entry_lookback'],
-            self.params['exit_lookback']
+            int(self.params['lookback_period']),
+            int(self.params['entry_lookback']),
+            int(self.params['exit_lookback'])
         ) + 10
 
         # Retrieve price data from the database (vectorized retrieval for one or multiple tickers)
@@ -151,7 +151,6 @@ class DonchianChannel(BaseStrategy):
         else:
             # Expecting a multi-index (ticker, date)
             def process_group(group):
-                group = group.droplevel('ticker')
                 if not self._validate_data(group, min_records=min_required):
                     return pd.DataFrame()
                 return self._generate_signals_for_df(group, initial_position)
@@ -200,8 +199,8 @@ class DonchianChannel(BaseStrategy):
                 'upper_channel', 'middle_channel', 'lower_channel', 'atr',
                 'signal' (raw trading signal), and 'position' (the updated position).
         """
-        entry_lookback = self.params['entry_lookback']
-        exit_lookback = self.params['exit_lookback']
+        entry_lookback = int(self.params['entry_lookback'])
+        exit_lookback = int(self.params['exit_lookback'])
 
         # Calculate rolling entry and exit levels (shifted by 1 period to avoid lookahead bias)
         upper_entry = price_data['high'].rolling(window=entry_lookback).max().shift(1)
@@ -214,7 +213,7 @@ class DonchianChannel(BaseStrategy):
 
         # Calculate ATR and set an entry filter if enabled
         if self.params['use_atr_filter']:
-            atr = self._calculate_atr(price_data, period=self.params['atr_period'])
+            atr = self._calculate_atr(price_data, period=int(self.params['atr_period']))
             channel_width = upper_entry - lower_entry
             atr_filter = channel_width > (atr * self.params['atr_threshold'])
         else:
