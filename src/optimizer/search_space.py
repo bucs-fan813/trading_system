@@ -470,9 +470,12 @@ aroon_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Whether to allow short positions
 
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.01, 0.07),  # Suitable for Indian markets' volatility
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.02, 0.15),  # Conservative profits for Indian market
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.01, 0.08),  # Optional trailing stop
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Suitable for Indian markets' volatility
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Conservative profits for Indian market
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) # Trailing stop percentage
 }
 
 choppiness_index_strat_search_space = {
@@ -488,9 +491,12 @@ choppiness_index_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Test both long-only and long-short approaches
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),  # Higher volatility in Indian markets
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.2),  # Potentially higher returns in growth markets
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),  # Optional trailing stop
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Higher volatility in Indian markets
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Potentially higher returns in growth markets
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) # Trailing stop percentage
 }   
 
 donchian_channel_strat_search_space = {
@@ -505,9 +511,12 @@ donchian_channel_strat_search_space = {
     'atr_threshold': hp.uniform('atr_threshold', 0.5, 2.0),        # ATR threshold multiplier
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),      # Stop loss percentage (tighter for Indian markets)
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take profit percentage
-    'trail_stop_pct': hp.uniform('trail_stop_pct', 0.0, 0.05),     # Trailing stop percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),      # Stop loss percentage (tighter for Indian markets)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]), # Trailing stop percentage
 
     # Strategy type
     'long_only': hp.choice('long_only', [True, False])  # Whether to allow short positions
@@ -526,10 +535,13 @@ ichimoku_cloud_strat_search_space = {
     'use_price_cross': hp.choice('use_price_cross', [True, False]),
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),            # Indian markets can be volatile, especially mid/small caps
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),            # Indian markets can be volatile, especially mid/small caps
     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),        # Reasonable profit targets for Indian stocks
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),     # Optional trailing stop
-    
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]), # Trailing stop percentage
+
     # Strategy type
     'long_only': hp.choice('long_only', [True, False])                   # Test both long-only and long-short approaches
 }
@@ -548,7 +560,11 @@ parabolic_sar_strat_search_space = {
     # Risk management parameters
     'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),
     'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.15),
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]), # Trailing stop percentage
+
     # Strategy behavior
     'long_only': hp.choice('long_only', [True, False])
 }
@@ -565,9 +581,12 @@ atr_trailing_stops_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # True for long-only, False for both long and short
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),  # Fixed stop-loss (adapted for Indian markets)
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take-profit levels
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05)  # Trailing stop percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Fixed stop-loss (adapted for Indian markets)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Take-profit levels
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]), # Trailing stop percentage
 }
 
 bollinger_bands_strat_search_space = {

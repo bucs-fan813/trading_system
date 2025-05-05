@@ -203,10 +203,10 @@ class ChoppinessIndexStrategy(BaseStrategy):
                 - 'signal_line': EMA-based signal line.
                 - 'histogram': Difference between MACD and the signal line.
         """
-        ci_period = self.params.get('ci_period', 14)
-        fast = self.params.get('macd_fast', 12)
-        slow = self.params.get('macd_slow', 26)
-        smooth = self.params.get('macd_smooth', 9)
+        ci_period = int(self.params.get('ci_period', 14))
+        fast = int(self.params.get('macd_fast', 12))
+        slow = int(self.params.get('macd_slow', 26))
+        smooth = int(self.params.get('macd_smooth', 9))
 
         if 'ticker' in df.index.names:
             # Process each ticker group separately.
