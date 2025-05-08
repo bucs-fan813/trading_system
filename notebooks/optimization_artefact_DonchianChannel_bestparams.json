@@ -1,0 +1,12 @@
+{
+    "atr_period": 21.0,
+    "atr_threshold": 1.969638605252063,
+    "entry_lookback": 18.0,
+    "exit_lookback": 7.0,
+    "long_only": true,
+    "lookback_period": 16.0,
+    "stop_loss_pct": 0.05882213387256627,
+    "take_profit_pct": 0.0763387731215088,
+    "trailing_stop_pct": 0.05872405971890065,
+    "use_atr_filter": false
+}
