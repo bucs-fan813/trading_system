@@ -97,7 +97,7 @@ class IchimokuCloud(BaseStrategy):
             default_params.update(params)
         super().__init__(db_config, default_params)
     
-    def generate_signals(self, tickers: Union[str, List[str]],
+    def generate_signals(self, ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -125,8 +125,8 @@ class IchimokuCloud(BaseStrategy):
             and downstream optimization.
         """
         # Convert to list if a single ticker is provided
-        if isinstance(tickers, str):
-            tickers = [tickers]
+        if isinstance(ticker, str):
+            ticker = [ticker]
         
         # Define necessary indicator periods from parameters
         displacement = self.params['displacement']
@@ -145,13 +145,13 @@ class IchimokuCloud(BaseStrategy):
         # Retrieve historical price data; when start_date is not provided, use a lookback period (e.g., 252 trading days)
         lookback = None if start_date else (252 + extra_periods)
         price_data = self.get_historical_prices(
-            tickers,
+            ticker,
             lookback=lookback,
             from_date=adjusted_start_date,
             to_date=end_date
         )
         if price_data.empty:
-            self.logger.warning("No price data available for tickers: %s", tickers)
+            self.logger.warning("No price data available for tickers: %s", ticker)
             return pd.DataFrame()
         
         # Determine whether the data is for multiple tickers (MultiIndex) or single ticker
@@ -262,6 +262,8 @@ class IchimokuCloud(BaseStrategy):
         
         # Drop rows with NA values that may result from rolling calculations.
         price_data = price_data.dropna()
+
+        print(price_data)
         
         # Apply risk management adjustments (stop loss, take profit, slippage, transaction cost).
         rm = RiskManager(
