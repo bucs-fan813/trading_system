@@ -10,71 +10,352 @@ from src.database.config import DatabaseConfig
 
 class RSIStrategy(BaseStrategy):
     """
-    RSI Strategy with Integrated Risk Management.
+    Relative Strength Index (RSI) Trading Strategy with Integrated Risk Management.
 
-    Mathematical Explanation:
-    -------------------------
-    The Relative Strength Index (RSI) is computed using Wilder's smoothing method:
-    
+    Strategy Logic:
+    ---------------
+    The Relative Strength Index (RSI) is a momentum oscillator that measures the speed and change
+    of price movements. It is calculated as:
       RSI = 100 - (100 / (1 + RS))
-    
-    where RS is defined as:
-    
-      RS = EMA(gain, period, alpha = 1/period) / EMA(loss, period, alpha = 1/period)
-    
-    Gains are determined by the positive differences (and zeros for negatives) in consecutive closing
-    prices, and losses are similarly processed (as the absolute value of negative differences). Hence,
-    if 'oversold' is set to 30 and 'overbought' to 70, a buy signal (signal = 1) is generated when RSI
-    crosses above 30 and a sell signal (signal = -1) is generated when RSI crosses below 70. Signal 
-    strength is normalized by the range (overbought – oversold) and, in long-only mode, sell signals are 
-    neutralized (set to 0).
+    where RS (Relative Strength) is the ratio of an N-period Exponential Moving Average (EMA)
+    of gains to an N-period EMA of losses. Wilder's smoothing method (alpha = 1/period) is used.
 
-    Risk Management Integration:
-    ---------------------------
-    The strategy then passes the combined price and signal DataFrame through a RiskManager that:
-      - Adjusts the entry price for slippage and transaction costs,
-      - Establishes stop-loss and take-profit thresholds,
-      - Identifies exit events (whether due to stop loss, take profit, or signal reversal),
-      - Computes realized trade returns and the cumulative return.
-    
-    The final DataFrame, indexed by date (or by (ticker, date) for multiple tickers), contains:
-      - 'open', 'high', 'low', 'close': Price references.
-      - 'signal': The trading signal (1 for buy, -1 for sell, 0 for neutral/exit).
-      - 'signal_strength': Normalized signal strength.
-      - 'rsi': The computed RSI indicator.
-      - 'return': The realized trade return following risk management adjustments.
-      - 'position': The updated trading position.
-      - 'cumulative_return': The cumulative risk–managed return.
-      - 'exit_type': The risk management exit reason (e.g., stop_loss, take_profit, or signal_exit).
+    - A buy signal (signal = 1) is generated when the RSI crosses above an 'oversold' threshold
+      (e.g., 30) from below.
+    - A sell signal (signal = -1) is generated when the RSI crosses below an 'overbought'
+      threshold (e.g., 70) from above.
+    - If 'long_only' mode is enabled, sell signals are converted to neutral signals (signal = 0),
+      effectively only allowing long entries and exits. Correspondingly, signal strength for
+      such neutralized sell signals is also set to 0.
 
-    This strategy supports backtesting (with a provided date range) as well as live forecasting through
-    its 'latest_only' mode. It fully supports vectorized operations for efficiency, even when processing
-    a list of tickers.
-    
-    Args:
-        db_config (DatabaseConfig): Database configuration settings.
-        params (dict, optional): Strategy parameters including:
-            - 'rsi_period': Lookback period for RSI calculation (default 14).
-            - 'overbought': Overbought threshold (default 70.0).
-            - 'oversold': Oversold threshold (default 30.0).
-            - 'stop_loss_pct': Stop loss percentage (e.g., 0.05).
-            - 'take_profit_pct': Take profit percentage (e.g., 0.10).
-            - 'trailing_stop_pct': Trailing stop percentage (e.g., 0.0).
-            - 'slippage_pct': Slippage percentage (e.g., 0.001).
-            - 'transaction_cost_pct': Transaction cost percentage (e.g., 0.001).
-            - 'long_only': Flag to allow only long positions (default True).
+    Signal strength is calculated based on how far the RSI moves beyond the threshold at the
+    time of the signal, normalized by the range between overbought and oversold thresholds.
+
+    Risk Management:
+    ----------------
+    Generated raw signals are processed by the `RiskManager` class, which applies:
+    - Stop-loss orders.
+    - Take-profit orders.
+    - Optional trailing stop-loss orders.
+    - Adjustments for estimated slippage and transaction costs on entries and exits.
+    The `RiskManager` determines the final position, calculates trade returns,
+    cumulative portfolio returns, and identifies the type of exit.
+
+    Data Handling:
+    --------------
+    - For backtesting, historical price data is fetched from `start_date` (with an
+      additional lookback period for initial indicator calculation) to `end_date`.
+    - For live forecasting (`latest_only=True`), a minimal amount of recent data is fetched.
+    - The strategy supports processing for both single and multiple tickers efficiently
+      using vectorized operations and pandas `groupby` where necessary.
+
+    Output:
+    -------
+    The `generate_signals` method returns a pandas DataFrame with the following columns,
+    indexed by date (or by (ticker, date) for multiple tickers):
+    - 'open', 'high', 'low', 'close': Original price data.
+    - 'rsi': Calculated RSI values.
+    - 'signal': Raw trading signal (1 for buy, -1 for sell, 0 for hold/neutral), which is
+                then passed to the RiskManager.
+    - 'signal_strength': Normalized strength of the raw signal.
+    - Columns from RiskManager: 'position' (actual position after RM), 'return' (realized trade return),
+      'cumulative_return', 'exit_type'.
     """
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
-        Initialize the RSI Strategy with database configuration and parameters.
-        
+        Initializes the RSIStrategy.
+
         Args:
-            db_config (DatabaseConfig): Database configuration settings.
-            params (dict, optional): Strategy-specific parameters.
+            db_config (DatabaseConfig): Configuration for database access.
+            params (dict, optional): Strategy-specific parameters. Expected keys include:
+                - 'rsi_period' (int): Lookback period for RSI (default: 14).
+                - 'overbought' (float): RSI level above which is considered overbought (default: 70.0).
+                - 'oversold' (float): RSI level below which is considered oversold (default: 30.0).
+                - 'long_only' (bool): If True, only long positions are taken (default: True).
+                - Risk management parameters (e.g., 'stop_loss_pct', 'take_profit_pct', etc.)
+                  as expected by the `RiskManager` class.
         """
         super().__init__(db_config, params or {})
         self.logger = logging.getLogger(self.__class__.__name__)
+        # Ensure default for long_only is set if not provided in params
         self.params.setdefault('long_only', True)
+
+    def _validate_parameters(self) -> dict:
+        """
+        Validates strategy-specific parameters for RSI and applies defaults.
+
+        Returns:
+            dict: A dictionary containing validated RSI parameters:
+                  'rsi_period', 'overbought', 'oversold'.
+
+        Raises:
+            ValueError: If parameters are invalid (e.g., rsi_period < 1, or
+                        invalid threshold ordering 0 < oversold < overbought < 100).
+        """
+        # Ensure types are correct and apply defaults
+        params = {
+            'rsi_period': int(self.params.get('rsi_period', 14)),
+            'overbought': float(self.params.get('overbought', 70.0)),
+            'oversold': float(self.params.get('oversold', 30.0))
+        }
+
+        if params['rsi_period'] < 1:
+            msg = f"Invalid rsi_period: {params['rsi_period']}. Must be a positive integer (>= 1)."
+            self.logger.error(msg)
+            raise ValueError(msg)
+        
+        if not (0 < params['oversold'] < params['overbought'] < 100):
+            msg = (
+                f"Invalid RSI thresholds: oversold={params['oversold']}, overbought={params['overbought']}. "
+                "Must satisfy 0 < oversold < overbought < 100."
+            )
+            self.logger.error(msg)
+            raise ValueError(msg)
+        
+        return params
+
+    def _get_price_data(self, 
+                        ticker: Union[str, List[str]], 
+                        rsi_period: int, 
+                        start_date_str: Optional[str], 
+                        end_date_str: Optional[str],
+                        latest_only: bool) -> pd.DataFrame:
+        """
+        Retrieves and prepares historical price data for RSI calculation.
+
+        For backtesting (`start_date_str` is provided), it fetches data from an 
+        `adjusted_start_date` (which is `start_date_str` minus a warmup buffer period 
+        for the indicator) up to `end_date_str`. The returned DataFrame is then 
+        filtered to begin from the original `start_date_str`.
+        For `latest_only` mode (live forecasting), it fetches a minimal lookback period 
+        sufficient for the most recent RSI calculation.
+
+        Args:
+            ticker (Union[str, List[str]]): Ticker symbol or a list of ticker symbols.
+            rsi_period (int): The period used for RSI calculation, influencing the warmup buffer.
+            start_date_str (Optional[str]): The strategy's conceptual start date ('YYYY-MM-DD').
+                                         Data prior to this date may be fetched for indicator warmup.
+            end_date_str (Optional[str]): The strategy's conceptual end date ('YYYY-MM-DD').
+            latest_only (bool): If True, fetches only recent data needed for the latest signal.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing historical price data ('open', 'high',
+                          'low', 'close', 'volume'), indexed by date (for a single ticker)
+                          or by a ('ticker', 'date') MultiIndex (for multiple tickers).
+                          The data is sorted by index. Returns an empty DataFrame if no data.
+        """
+        if latest_only:
+            # Fetch minimal data for the last RSI value + signal (requires 1 previous RSI for crossover)
+            # RSI period + 1 for current RSI, +1 for previous RSI value for crossover check.
+            lookback_needed = rsi_period + 2 
+            df = self.get_historical_prices(ticker, lookback=lookback_needed)
+            return df.sort_index() # Ensure data is chronologically sorted
+
+        if start_date_str:
+            original_start_dt = pd.to_datetime(start_date_str)
+            # Calculate an adjusted start date to fetch enough data for RSI warmup.
+            # A common heuristic is 2-3 times the indicator period.
+            buffer_days = rsi_period * 3 
+            adjusted_start_dt = original_start_dt - pd.DateOffset(days=buffer_days)
+            adjusted_start_str_for_query = adjusted_start_dt.strftime('%Y-%m-%d')
+            
+            self.logger.debug(
+                f"Original start date: {start_date_str}. Fetching data from adjusted start: {adjusted_start_str_for_query} for RSI warmup."
+            )
+            df_full_range = self.get_historical_prices(
+                ticker, 
+                from_date=adjusted_start_str_for_query, 
+                to_date=end_date_str # end_date_str can be None
+            )
+
+            if df_full_range.empty:
+                self.logger.warning(f"No data retrieved between {adjusted_start_str_for_query} and {end_date_str} for {ticker}.")
+                return df_full_range
+
+            # Filter the DataFrame to begin from the original_start_dt.
+            # Data fetched before original_start_dt is used implicitly for indicator warmup.
+            if isinstance(df_full_range.index, pd.MultiIndex):
+                # Filter based on the date level (assuming it's level 1)
+                df = df_full_range[df_full_range.index.get_level_values(1) >= original_start_dt]
+            else: # Single DatetimeIndex
+                df = df_full_range[df_full_range.index >= original_start_dt]
+            return df.sort_index() 
+        else:
+            # No start_date provided, fetch a general large history (e.g., for full backtest)
+            # Using rsi_period + (252 trading days * 2 years) as a substantial lookback.
+            df = self.get_historical_prices(ticker, lookback=rsi_period + (252 * 2))
+            return df.sort_index()
+
+
+    def _calculate_rsi(self, close_prices: pd.Series, period: int) -> pd.Series:
+        """
+        Calculates the Relative Strength Index (RSI) using Wilder's smoothing method.
+
+        Args:
+            close_prices (pd.Series): Series of closing prices.
+            period (int): Lookback period for RSI calculation. Must be a positive integer.
+
+        Returns:
+            pd.Series: Series containing the calculated RSI values. NaNs will be present
+                       at the beginning until enough data (`period`) is available.
+        """
+        delta = close_prices.diff()
+        
+        # Calculate gains (positive price changes) and losses (absolute of negative price changes)
+        gain = delta.where(delta > 0, 0.0).fillna(0) 
+        loss = (-delta).where(-delta > 0, 0.0).fillna(0)
+
+        # Calculate Wilder's Exponential Moving Average for gains and losses
+        # alpha = 1 / period for Wilder's smoothing.
+        # min_periods=period ensures EMA starts only after enough data.
+        avg_gain = gain.ewm(alpha=1.0/period, adjust=False, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1.0/period, adjust=False, min_periods=period).mean()
+
+        # Calculate Relative Strength (RS)
+        rs = avg_gain / avg_loss
+        
+        # Calculate RSI
+        # RSI = 100 - (100 / (1 + RS))
+        # If avg_loss is 0:
+        #   - If avg_gain > 0, RS = inf, RSI = 100.
+        #   - If avg_gain = 0, RS = NaN (0/0), RSI = NaN.
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        
+        return rsi
+
+
+    def _generate_rsi_signals(self, 
+                              rsi: pd.Series, 
+                              oversold_thr: float, 
+                              overbought_thr: float,
+                              is_long_only: bool) -> tuple[pd.Series, pd.Series]:
+        """
+        Generates trading signals and their strength based on RSI values and thresholds.
+
+        Args:
+            rsi (pd.Series): Series of calculated RSI values.
+            oversold_thr (float): The RSI level below which is considered oversold.
+            overbought_thr (float): The RSI level above which is considered overbought.
+            is_long_only (bool): If True, sell signals are suppressed (signal becomes 0, strength 0).
+
+        Returns:
+            Tuple[pd.Series, pd.Series]:
+                - signals: Series of trading signals (1 for buy, -1 for sell, 0 for hold/neutral).
+                - signal_strength: Series of normalized signal strengths (0.0 to 1.0).
+        """
+        # Ensure RSI series has at least two values for rsi.shift(1) to work
+        if len(rsi) < 2:
+            self.logger.debug("RSI series too short for signal generation. Returning neutral signals.")
+            empty_signals = pd.Series(0, index=rsi.index, dtype=int)
+            empty_strength = pd.Series(0.0, index=rsi.index, dtype=float)
+            return empty_signals, empty_strength
+
+        rsi_shifted = rsi.shift(1) # Previous RSI value
+
+        # Define signal conditions
+        buy_condition = (rsi_shifted <= oversold_thr) & (rsi > oversold_thr)
+        sell_condition = (rsi_shifted >= overbought_thr) & (rsi < overbought_thr)
+
+        # Calculate signal strength normalization factor
+        range_width = overbought_thr - oversold_thr
+        if abs(range_width) < 1e-6: # Avoid division by zero if thresholds are virtually identical
+            self.logger.warning(
+                f"RSI overbought ({overbought_thr}) and oversold ({oversold_thr}) thresholds are "
+                "too close or equal. Signal strength calculation might be affected (set to 0 or 1)."
+            )
+            # Default to a non-zero width to prevent NaNs/infs in strength; strength will be 0 or based on RSI value
+            range_width = max(1.0, abs(overbought_thr)) # A large denominator will make strength small
+
+        # Calculate potential strengths
+        buy_strength_raw = ((rsi - oversold_thr) / range_width).clip(lower=0.0, upper=1.0)
+        sell_strength_raw = ((overbought_thr - rsi) / range_width).clip(lower=0.0, upper=1.0)
+
+        # Initialize signals and strengths with neutral values
+        final_signals = pd.Series(0, index=rsi.index, dtype=int)
+        final_signal_strength = pd.Series(0.0, index=rsi.index, dtype=float)
+
+        # Apply buy signals
+        final_signals.loc[buy_condition] = 1
+        final_signal_strength.loc[buy_condition] = buy_strength_raw[buy_condition]
+
+        # Apply sell signals (conditionally based on long_only)
+        if not is_long_only:
+            final_signals.loc[sell_condition] = -1
+            final_signal_strength.loc[sell_condition] = sell_strength_raw[sell_condition]
+        # If is_long_only is True, sell signals are implicitly ignored (signal and strength remain 0).
+            
+        # Fill NaNs that might occur at the beginning due to rsi.shift(1)
+        final_signals = final_signals.fillna(0)
+        final_signal_strength = final_signal_strength.fillna(0.0)
+        
+        return final_signals, final_signal_strength
+
+    def _apply_risk_management(self, 
+                               df_with_signals: pd.DataFrame, 
+                               risk_manager_params: dict,
+                               initial_position: int, 
+                               latest_only: bool,
+                               # Pass original start/end for final filtering after RM
+                               filter_start_date_str: Optional[str], 
+                               filter_end_date_str: Optional[str]    
+                              ) -> pd.DataFrame:
+        """
+        Applies risk management rules using the RiskManager class to the generated signals.
+        Filters the results to the specified date range if not in `latest_only` mode.
+
+        Args:
+            df_with_signals (pd.DataFrame): DataFrame containing price data and raw signals.
+                                           Must include 'open', 'high', 'low', 'close', 'signal'.
+                                           Index should be DatetimeIndex or ('ticker', 'date') MultiIndex.
+            risk_manager_params (dict): Parameters for initializing the RiskManager.
+            initial_position (int): The initial trading position for the RiskManager.
+            latest_only (bool): If True, returns only the latest record per ticker.
+            filter_start_date_str (Optional[str]): The conceptual start date of the strategy, used for
+                                         filtering the final results if not `latest_only`.
+            filter_end_date_str (Optional[str]): The conceptual end date of the strategy, used for
+                                       filtering the final results if not `latest_only`.
+        Returns:
+            pd.DataFrame: DataFrame augmented with risk-managed columns ('position',
+                          'return', 'cumulative_return', 'exit_type').
+        """
+        risk_manager = RiskManager(**risk_manager_params)
+        
+        # Ensure DataFrame is sorted before passing to RiskManager.
+        # This should generally be true from _get_price_data and subsequent operations.
+        df_sorted_for_rm = df_with_signals.sort_index()
+
+        # RiskManager.apply handles single vs. multi-ticker DataFrames appropriately.
+        # It expects specific columns: 'open', 'high', 'low', 'close', 'signal'.
+        processed_df = risk_manager.apply(df_sorted_for_rm, initial_position)
+
+        # Filter results based on the original conceptual date range, unless in latest_only mode.
+        # This ensures the output aligns with the user's requested backtest period.
+        if not latest_only and filter_start_date_str:
+            final_start_dt = pd.to_datetime(filter_start_date_str)
+            final_end_dt = pd.to_datetime(filter_end_date_str) if filter_end_date_str else None
+
+            if isinstance(processed_df.index, pd.MultiIndex):
+                # Assuming date is the second level (level 1) of the MultiIndex
+                date_level_values = processed_df.index.get_level_values(1)
+                mask = date_level_values >= final_start_dt
+                if final_end_dt:
+                    mask &= (date_level_values <= final_end_dt)
+                processed_df = processed_df[mask]
+            else: # Single DatetimeIndex
+                mask = processed_df.index >= final_start_dt
+                if final_end_dt:
+                    mask &= (processed_df.index <= final_end_dt)
+                processed_df = processed_df[mask]
+        
+        # If latest_only is True, return only the last available record per ticker.
+        if latest_only:
+            if isinstance(processed_df.index, pd.MultiIndex):
+                # Group by ticker (level 0) and take the last entry for each ticker
+                processed_df = processed_df.groupby(level=0, group_keys=False).tail(1)
+            else: # Single ticker DataFrame
+                processed_df = processed_df.tail(1)
+                
+        return processed_df
 
     def generate_signals(self, 
                          ticker: Union[str, List[str]],
@@ -83,228 +364,107 @@ class RSIStrategy(BaseStrategy):
                          initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
-        Generate RSI-based trading signals with integrated risk management.
-        
-        This method retrieves historical price data, computes the RSI indicator using vectorized and group-based 
-        calculations (if multiple tickers are provided), generates buy/sell signals along with normalized signal 
-        strength, and applies risk management rules (stop-loss, take-profit, slippage, and transaction costs).
-        The output is a comprehensive DataFrame (containing all required columns) suitable for backtesting
-        and performance metric computations (e.g., Sharpe ratio, maximum drawdown). In live forecasting mode 
-        ('latest_only' True), only the latest signal(s) are returned.
-        
-        Args:
-            ticker (str or List[str]): Stock ticker symbol or list of symbols.
-            start_date (str, optional): Start date in 'YYYY-MM-DD' format for backtesting.
-            end_date (str, optional): End date in 'YYYY-MM-DD' format for backtesting.
-            initial_position (int): Starting trading position (0 for flat, 1 for long, -1 for short).
-            latest_only (bool): If True, returns only the latest available signal for live trading.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing price data, RSI, generated signals, signal strength, and risk-managed 
-                          trade performance metrics, indexed by date (or (ticker, date) for multiple tickers).
-        """
-        # Validate strategy-specific parameters.
-        params = self._validate_parameters()
-        rsi_period = params['rsi_period']
-        overbought = params['overbought']
-        oversold = params['oversold']
+        Generates RSI-based trading signals with integrated risk management.
 
-        # Retrieve historical price data with an adjusted lookback.
-        df = self._get_price_data(ticker, rsi_period, start_date, end_date, latest_only)
-        if df.empty:
-            self.logger.warning("No historical price data retrieved.")
+        This method orchestrates the entire process:
+        1. Validates RSI-specific parameters.
+        2. Retrieves historical price data, including a warmup period for indicators.
+        3. Calculates RSI and generates raw buy/sell signals for each ticker.
+        4. Applies risk management rules (stop-loss, take-profit, costs) via RiskManager.
+        5. Filters the final output to the requested date range or latest signal.
+
+        Args:
+            ticker (Union[str, List[str]]): A single ticker symbol or a list of ticker symbols.
+            start_date (Optional[str]): The start date for the backtesting period ('YYYY-MM-DD').
+                                        If None, a long history is fetched.
+            end_date (Optional[str]): The end date for the backtesting period ('YYYY-MM-DD').
+                                      If None, data up to the most recent available is used.
+            initial_position (int): The initial trading position (0 for flat, 1 for long, -1 for short).
+                                    This is passed to the RiskManager.
+            latest_only (bool): If True, only the latest signal data point for each ticker is returned,
+                                suitable for live trading or forecasting.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing price data, RSI values, raw signals, signal strength,
+                          and comprehensive risk-managed trade performance metrics (position, returns, etc.).
+                          The DataFrame is indexed by date (for a single ticker) or by a 
+                          ('ticker', 'date') MultiIndex (for multiple tickers).
+        """
+        # Validate RSI-specific parameters from self.params
+        rsi_specific_params = self._validate_parameters()
+        rsi_period = rsi_specific_params['rsi_period']
+        overbought_thr = rsi_specific_params['overbought']
+        oversold_thr = rsi_specific_params['oversold']
+        
+        # Determine if strategy operates in long_only mode from general self.params
+        is_long_only = self.params.get('long_only', True) # Default to True if not specified
+
+        # Retrieve historical price data. _get_price_data handles warmup lookback & initial date filtering.
+        price_df = self._get_price_data(ticker, rsi_period, start_date, end_date, latest_only)
+        
+        if price_df.empty:
+            self.logger.warning(f"No historical price data retrieved for ticker(s): {ticker}. "
+                                "Cannot generate signals. Returning empty DataFrame.")
+            # Return an empty DataFrame; downstream consumers should check for .empty
             return pd.DataFrame()
 
-        # Compute RSI and generate signals in a vectorized manner.
-        if isinstance(ticker, list) or (hasattr(df.index, 'nlevels') and df.index.nlevels == 2):
-            # Process each ticker group separately.
-            def process_group(group):
-                group = group.sort_index()  # Ensure chronological order.
-                rsi = self._calculate_rsi(group['close'], rsi_period)
-                signals, signal_strength = self._generate_rsi_signals(rsi, oversold, overbought)
-                group['rsi'] = rsi
-                group['signal'] = signals
-                group['signal_strength'] = signal_strength
-                return group
+        # Helper function to calculate indicators and signals for a DataFrame group (single ticker's data)
+        def _process_ticker_group(group_df: pd.DataFrame) -> pd.DataFrame:
+            # Ensure data within the group is sorted by date (important for time-series calculations)
+            # This should already be true if _get_price_data and BaseStrategy.get_historical_prices sort correctly.
+            group_df = group_df.sort_index() 
+            
+            if 'close' not in group_df.columns:
+                ticker_name = group_df.name if hasattr(group_df, 'name') else 'Unknown Ticker'
+                self.logger.error(
+                    f"Price data for ticker '{ticker_name}' is missing the 'close' column. "
+                    "Cannot calculate RSI or signals."
+                )
+                # Add placeholder columns to maintain DataFrame structure for .apply()
+                group_df['rsi'] = np.nan
+                group_df['signal'] = 0
+                group_df['signal_strength'] = 0.0
+                return group_df
 
-            signals_df = df.groupby(level=0, group_keys=False).apply(process_group)
-        else:
-            df = df.sort_index()  # Ensure chronological order.
-            rsi = self._calculate_rsi(df['close'], rsi_period)
-            signals, signal_strength = self._generate_rsi_signals(rsi, oversold, overbought)
-            signals_df = df.copy()
-            signals_df['rsi'] = rsi
-            signals_df['signal'] = signals
-            signals_df['signal_strength'] = signal_strength
+            # Calculate RSI
+            group_df['rsi'] = self._calculate_rsi(group_df['close'], rsi_period)
+            
+            # Generate raw signals and their strength based on RSI
+            signals, strength = self._generate_rsi_signals(
+                group_df['rsi'], oversold_thr, overbought_thr, is_long_only
+            )
+            group_df['signal'] = signals
+            group_df['signal_strength'] = strength
+            return group_df
 
-        # Extract risk management parameters.
-        risk_params = {k: self.params[k] for k in [
+        # Apply indicator and raw signal calculations
+        if isinstance(price_df.index, pd.MultiIndex): # Multi-ticker DataFrame
+            # Group by ticker (level 0 of MultiIndex) and apply processing
+            # group_keys=False prevents adding an extra level to the index from group names
+            signals_df = price_df.groupby(level=0, group_keys=False).apply(_process_ticker_group)
+        else: # Single-ticker DataFrame
+            signals_df = _process_ticker_group(price_df)
+
+        # Prepare parameters for RiskManager, extracting from self.params
+        # RiskManager will use its own defaults if specific params are not found here.
+        risk_manager_param_keys = [
             'stop_loss_pct', 'take_profit_pct', 'trailing_stop_pct',
             'slippage_pct', 'transaction_cost_pct'
-        ] if k in self.params}
-
-        # Apply risk management rules.
-        result = self._apply_risk_management(signals_df, risk_params, initial_position, latest_only, start_date, end_date)
-        return result
-
-    def _validate_parameters(self) -> dict:
-        """
-        Validate and return strategy parameters with defaults applied.
-        
-        Returns:
-            dict: Validated strategy parameters.
-        """
-        params = {
-            'rsi_period': self.params.get('rsi_period', 14),
-            'overbought': self.params.get('overbought', 70.0),
-            'oversold': self.params.get('oversold', 30.0)
+        ]
+        risk_manager_params = {
+            key: self.params[key] for key in risk_manager_param_keys if key in self.params
         }
-        if params['rsi_period'] < 1:
-            raise ValueError("RSI period must be ≥1")
-        if not (0 < params['oversold'] < params['overbought'] < 100):
-            raise ValueError("Thresholds must satisfy 0 < oversold < overbought < 100")
         
-        return params
-
-    def _get_price_data(self, 
-                        ticker: Union[str, List[str]], 
-                        rsi_period: int, 
-                        start_date: Optional[str], 
-                        end_date: Optional[str],
-                        latest_only: bool) -> pd.DataFrame:
-        """
-        Retrieve historical price data with an adjusted lookback to ensure sufficient data 
-        for RSI computation.
+        # Apply risk management.
+        # _apply_risk_management handles final date filtering (for start_date/end_date)
+        # and latest_only logic *after* RiskManager processing.
+        final_df = self._apply_risk_management(
+            signals_df, 
+            risk_manager_params, 
+            initial_position, 
+            latest_only,
+            start_date, # Pass original start_date for final filtering
+            end_date    # Pass original end_date for final filtering
+        )
         
-        For live signal generation (latest_only=True), a minimal lookback of (rsi_period+2) is used.
-        For backtesting, if start_date is provided, buffer days (rsi_period*2) are subtracted from start_date.
-        Supports both single and multiple tickers.
-        
-        Args:
-            ticker (str or List[str]): Stock ticker symbol or list of symbols.
-            rsi_period (int): Lookback period for RSI calculation.
-            start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
-            end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
-            latest_only (bool): If True, retrieves only the minimal data needed.
-        
-        Returns:
-            pd.DataFrame: Historical price data indexed by date or by (ticker, date) for multiple tickers.
-        """
-        if latest_only:
-            return self.get_historical_prices(ticker, lookback=rsi_period + 2)
-        
-        if start_date:
-            start_dt = pd.to_datetime(start_date)
-            adjusted_start = (start_dt - pd.DateOffset(days=rsi_period * 2)).strftime('%Y-%m-%d')
-            df = self.get_historical_prices(ticker, data_source='yfinance', from_date=adjusted_start, to_date=end_date)
-            # For multi-ticker data (with a MultiIndex), filter by the date level.
-            if hasattr(df.index, 'nlevels') and df.index.nlevels == 2:
-                df = df.loc[(slice(None), start_dt):]
-            else:
-                df = df[df.index >= start_dt]
-            return df
-        return self.get_historical_prices(ticker, lookback=rsi_period + 252 * 2, data_source='yfinance')
-
-    def _calculate_rsi(self, close_prices: pd.Series, period: int) -> pd.Series:
-        """
-        Compute the Relative Strength Index (RSI) using Wilder's smoothing method.
-        
-        Args:
-            close_prices (pd.Series): Series of closing prices.
-            period (int): Lookback period for the RSI calculation.
-        
-        Returns:
-            pd.Series: RSI values computed as 100 - (100 / (1 + RS)).
-        """
-        delta = close_prices.diff()
-        gain = delta.clip(lower=0).fillna(0)
-        loss = (-delta).clip(lower=0).fillna(0)
-        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        return 100 - (100 / (1 + rs))
-
-    def _generate_rsi_signals(self, rsi: pd.Series, oversold: float, overbought: float) -> tuple:
-        """
-        Generate trading signals based on RSI crossovers and compute normalized signal strength.
-        
-        A buy signal (1) is generated when RSI crosses above the oversold threshold.
-        A sell signal (-1) is generated when RSI crosses below the overbought threshold; in a long-only mode,
-        such sell signals are neutralized to 0.
-        
-        Args:
-            rsi (pd.Series): Series of computed RSI values.
-            oversold (float): Oversold threshold value.
-            overbought (float): Overbought threshold value.
-        
-        Returns:
-            tuple: A tuple of two pd.Series:
-                - The first contains trading signals (1 for buy, -1 for sell, 0 otherwise).
-                - The second contains the normalized signal strength between 0 and 1.
-        """
-        buy_signal = (rsi.shift(1) <= oversold) & (rsi > oversold)
-        sell_signal = (rsi.shift(1) >= overbought) & (rsi < overbought)
-        range_width = overbought - oversold
-        buy_strength = ((rsi - oversold) / range_width).clip(lower=0, upper=1)
-        sell_strength = ((overbought - rsi) / range_width).clip(lower=0, upper=1)
-        signals = np.select([buy_signal, sell_signal], [1, -1], default=0)
-        # In long-only mode, neutralize sell signals.
-        if self.params.get('long_only', True):
-            signals = np.where(sell_signal, 0, signals)
-            buy_strength = np.where(sell_signal, 0, buy_strength)
-        signal_strength = np.select([buy_signal, sell_signal], [buy_strength, sell_strength], default=0.0)
-        return pd.Series(signals, index=rsi.index), pd.Series(signal_strength, index=rsi.index)
-
-    def _apply_risk_management(self, df: pd.DataFrame, risk_params: dict,
-                               initial_position: int, latest_only: bool,
-                               start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
-        """
-        Apply risk management rules to adjust trading signals and positions.
-        
-        This function uses the RiskManager to:
-          - Adjust entry prices to account for slippage and transaction costs.
-          - Calculate stop-loss and take-profit thresholds.
-          - Detect exit events (stop-loss, take-profit, or signal reversal).
-          - Compute the realized trade return and cumulative return.
-        
-        The method supports multi-ticker processing (using groupby) and ensures that if backtesting is
-        requested, the results are filtered to the specified date range. In live mode ('latest_only'),
-        only the most recent signal(s) per ticker are returned.
-        
-        Args:
-            df (pd.DataFrame): DataFrame with price data, raw signals, RSI, etc.
-            risk_params (dict): Dictionary containing risk management parameters.
-            initial_position (int): Starting trading position.
-            latest_only (bool): If True, return only the latest signal(s).
-            start_date (str, optional): Backtest start date.
-            end_date (str, optional): Backtest end date.
-        
-        Returns:
-            pd.DataFrame: DataFrame containing risk-managed positions, realized returns, cumulative returns, 
-                          and exit types, indexed by date (or (ticker, date) for multi-ticker data).
-        """
-        risk_manager = RiskManager(**risk_params)
-        # Apply risk management per ticker if processing multiple tickers.
-        if hasattr(df.index, 'nlevels') and df.index.nlevels == 2:
-            result = df.groupby(level=0, group_keys=False).apply(lambda group: risk_manager.apply(group.sort_index(), initial_position))
-        else:
-            result = risk_manager.apply(df.sort_index(), initial_position)
-
-        # For backtesting, filter the results by the provided date range.
-        if start_date and not latest_only:
-            start_dt = pd.to_datetime(start_date)
-            end_dt = pd.to_datetime(end_date) if end_date else None
-            if hasattr(result.index, 'nlevels') and result.index.nlevels == 2:
-                if end_dt is not None:
-                    result = result.loc[(slice(None), start_dt):(slice(None), end_dt)]
-                else:
-                    result = result.loc[(slice(None), start_dt):]
-            else:
-                result = result[(result.index >= start_dt) & (result.index <= end_dt) if end_dt is not None else (result.index >= start_dt)]
-        # In live mode, return only the last available row per ticker.
-        if latest_only:
-            if hasattr(result.index, 'nlevels') and result.index.nlevels == 2:
-                result = result.groupby(level=0, group_keys=False).tail(1)
-            else:
-                result = result.iloc[[-1]]
-        return result
+        return final_df
