@@ -72,10 +72,10 @@ class StochasticStrategy(BaseStrategy):
         Raises:
             ValueError: If k_period or d_period is non-positive or if overbought <= oversold.
         """
-        self.k_period = self.params.get('k_period', 14)
-        self.d_period = self.params.get('d_period', 3)
-        self.overbought = self.params.get('overbought', 80)
-        self.oversold = self.params.get('oversold', 20)
+        self.k_period = int(self.params.get('k_period', 14))
+        self.d_period = int(self.params.get('d_period', 3))
+        self.overbought = int(self.params.get('overbought', 80))
+        self.oversold = int(self.params.get('oversold', 20))
 
         if self.k_period <= 0 or self.d_period <= 0:
             raise ValueError("k_period and d_period must be positive integers")
@@ -138,7 +138,8 @@ class StochasticStrategy(BaseStrategy):
                     grouped_results.append(result)
                 if not grouped_results:
                     return pd.DataFrame()
-                final_result = pd.concat(grouped_results).sort_index()
+                final_result = pd.concat(grouped_results)
+                final_result = final_result.reorder_levels(['ticker', 'date'])
                 # If forecasting only, return the last row per ticker.
                 if latest_only:
                     final_result = final_result.groupby(level=0).tail(1)
