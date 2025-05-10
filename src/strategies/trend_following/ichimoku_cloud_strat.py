@@ -112,7 +112,7 @@ class IchimokuCloud(BaseStrategy):
         slippage, transaction costs).
 
         Args:
-            tickers (str or List[str]): A single ticker symbol or a list of ticker symbols.
+            ticker (str or List[str]): A single ticker symbol or a list of ticker symbols.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format. When provided,
                                         additional historical data is fetched for indicator calculation.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
@@ -129,10 +129,10 @@ class IchimokuCloud(BaseStrategy):
             ticker = [ticker]
         
         # Define necessary indicator periods from parameters
-        displacement = self.params['displacement']
-        tenkan_period = self.params['tenkan_period']
-        kijun_period = self.params['kijun_period']
-        senkou_b_period = self.params['senkou_b_period']
+        displacement = int(self.params['displacement'])
+        tenkan_period = int(self.params['tenkan_period'])
+        kijun_period = int(self.params['kijun_period'])
+        senkou_b_period = int(self.params['senkou_b_period'])
         extra_periods = displacement + max(tenkan_period, kijun_period, senkou_b_period)
         
         # If a start_date is provided, adjust it backwards to supply extra data for rolling calculations
@@ -158,114 +158,173 @@ class IchimokuCloud(BaseStrategy):
         multi_ticker = isinstance(price_data.index, pd.MultiIndex)
         
         if multi_ticker:
-            # Group data by ticker for vectorized rolling operations.
-            groups = price_data.groupby(level='ticker')
-            # Calculate Tenkan-sen: (highest high + lowest low) / 2 over tenkan_period.
-            tenkan_high = groups['high'].rolling(window=tenkan_period, min_periods=tenkan_period).max().reset_index(level=0, drop=True)
-            tenkan_low = groups['low'].rolling(window=tenkan_period, min_periods=tenkan_period).min().reset_index(level=0, drop=True)
-            price_data['tenkan_sen'] = (tenkan_high + tenkan_low) / 2
-
-            # Calculate Kijun-sen: (highest high + lowest low) / 2 over kijun_period.
-            kijun_high = groups['high'].rolling(window=kijun_period, min_periods=kijun_period).max().reset_index(level=0, drop=True)
-            kijun_low = groups['low'].rolling(window=kijun_period, min_periods=kijun_period).min().reset_index(level=0, drop=True)
-            price_data['kijun_sen'] = (kijun_high + kijun_low) / 2
-
-            # Senkou Span A: (Tenkan-sen + Kijun-sen) / 2, shifted forward by displacement.
-            senkou_a = (price_data['tenkan_sen'] + price_data['kijun_sen']) / 2
-            price_data['senkou_span_a'] = senkou_a.groupby(price_data.index.get_level_values('ticker')).shift(displacement)
-
-            # Senkou Span B: (highest high + lowest low) / 2 over senkou_b_period, shifted forward by displacement.
-            senkou_b_high = groups['high'].rolling(window=senkou_b_period, min_periods=senkou_b_period).max().reset_index(level=0, drop=True)
-            senkou_b_low = groups['low'].rolling(window=senkou_b_period, min_periods=senkou_b_period).min().reset_index(level=0, drop=True)
-            senkou_b = (senkou_b_high + senkou_b_low) / 2
-            price_data['senkou_span_b'] = senkou_b.groupby(price_data.index.get_level_values('ticker')).shift(displacement)
-
-            # Chikou Span: Current close shifted backward by displacement.
-            price_data['chikou_span'] = groups['close'].shift(-displacement).reset_index(level=0, drop=True)
-
-            # Compute previous values of Tenkan-sen, Kijun-sen and close for cross detection.
-            price_data['prev_tenkan'] = groups['tenkan_sen'].shift(1).reset_index(level=0, drop=True)
-            price_data['prev_kijun'] = groups['kijun_sen'].shift(1).reset_index(level=0, drop=True)
-            price_data['prev_close'] = groups['close'].shift(1).reset_index(level=0, drop=True)
+            # Group data by ticker for vectorized operations
+            # Calculate Ichimoku components properly across multiple tickers
+            result_dfs = []
             
-            # For cloud breakout signals compute previous cloud boundaries.
-            cloud_top = price_data[['senkou_span_a', 'senkou_span_b']].max(axis=1)
-            cloud_bottom = price_data[['senkou_span_a', 'senkou_span_b']].min(axis=1)
-            price_data['prev_cloud_top'] = cloud_top.groupby(price_data.index.get_level_values('ticker')).shift(1)
-            price_data['prev_cloud_bottom'] = cloud_bottom.groupby(price_data.index.get_level_values('ticker')).shift(1)
+            for ticker_name, group_data in price_data.groupby(level='ticker'):
+                # Convert to single index for calculations
+                single_df = group_data.droplevel('ticker')
+                
+                # Calculate Tenkan-sen (Conversion Line)
+                tenkan_high = single_df['high'].rolling(window=tenkan_period, min_periods=tenkan_period).max()
+                tenkan_low = single_df['low'].rolling(window=tenkan_period, min_periods=tenkan_period).min()
+                single_df['tenkan_sen'] = (tenkan_high + tenkan_low) / 2
+                
+                # Calculate Kijun-sen (Base Line)
+                kijun_high = single_df['high'].rolling(window=kijun_period, min_periods=kijun_period).max()
+                kijun_low = single_df['low'].rolling(window=kijun_period, min_periods=kijun_period).min()
+                single_df['kijun_sen'] = (kijun_high + kijun_low) / 2
+                
+                # Calculate Senkou Span A (Leading Span A)
+                senkou_a = (single_df['tenkan_sen'] + single_df['kijun_sen']) / 2
+                single_df['senkou_span_a'] = senkou_a.shift(displacement)
+                
+                # Calculate Senkou Span B (Leading Span B)
+                senkou_b_high = single_df['high'].rolling(window=senkou_b_period, min_periods=senkou_b_period).max()
+                senkou_b_low = single_df['low'].rolling(window=senkou_b_period, min_periods=senkou_b_period).min()
+                senkou_b = (senkou_b_high + senkou_b_low) / 2
+                single_df['senkou_span_b'] = senkou_b.shift(displacement)
+                
+                # Calculate Chikou Span (Lagging Span)
+                single_df['chikou_span'] = single_df['close'].shift(-displacement)
+                
+                # Store previous values for crossover detection
+                single_df['prev_tenkan'] = single_df['tenkan_sen'].shift(1)
+                single_df['prev_kijun'] = single_df['kijun_sen'].shift(1)
+                single_df['prev_close'] = single_df['close'].shift(1)
+                
+                # Calculate cloud boundaries
+                cloud_top = single_df[['senkou_span_a', 'senkou_span_b']].max(axis=1)
+                cloud_bottom = single_df[['senkou_span_a', 'senkou_span_b']].min(axis=1)
+                single_df['prev_cloud_top'] = cloud_top.shift(1)
+                single_df['prev_cloud_bottom'] = cloud_bottom.shift(1)
+                
+                # Compute cloud bullishness
+                single_df['cloud_bullish'] = single_df['senkou_span_a'] > single_df['senkou_span_b']
+                
+                # Generate signals
+                single_df['signal'] = 0
+                
+                # Generate TK Cross signals
+                if self.params.get('use_tk_cross', True):
+                    tk_cross_up = (single_df['tenkan_sen'] > single_df['kijun_sen']) & (single_df['prev_tenkan'] <= single_df['prev_kijun'])
+                    tk_cross_down = (single_df['tenkan_sen'] < single_df['kijun_sen']) & (single_df['prev_tenkan'] >= single_df['prev_kijun'])
+                    single_df.loc[tk_cross_up, 'signal'] = 1
+                    if not self.params.get('long_only', True):
+                        single_df.loc[tk_cross_down, 'signal'] = -1
+                    else:
+                        single_df.loc[tk_cross_down, 'signal'] = 0
+                
+                # Generate Price-Kijun Cross signals
+                if self.params.get('use_price_cross', False):
+                    price_cross_up = (single_df['close'] > single_df['kijun_sen']) & (single_df['prev_close'] <= single_df['prev_kijun'])
+                    price_cross_down = (single_df['close'] < single_df['kijun_sen']) & (single_df['prev_close'] >= single_df['prev_kijun'])
+                    single_df.loc[price_cross_up, 'signal'] = 1
+                    if not self.params.get('long_only', True):
+                        single_df.loc[price_cross_down, 'signal'] = -1
+                    else:
+                        single_df.loc[price_cross_down, 'signal'] = 0
+                
+                # Generate Cloud Breakout signals
+                if self.params.get('use_cloud_breakouts', True):
+                    cloud_breakout_up = (single_df['close'] > cloud_top) & (single_df['prev_close'] <= single_df['prev_cloud_top'])
+                    cloud_breakout_down = (single_df['close'] < cloud_bottom) & (single_df['prev_close'] >= single_df['prev_cloud_bottom'])
+                    single_df.loc[cloud_breakout_up, 'signal'] = 1
+                    if not self.params.get('long_only', True):
+                        single_df.loc[cloud_breakout_down, 'signal'] = -1
+                    else:
+                        single_df.loc[cloud_breakout_down, 'signal'] = 0
+                
+                # Add ticker column for later merging
+                single_df['ticker'] = ticker_name
+                result_dfs.append(single_df)
+            
+            # Combine all individual ticker DataFrames
+            price_data = pd.concat(result_dfs)
+            
+            # Set MultiIndex if not already
+            if not isinstance(price_data.index, pd.MultiIndex):
+                price_data = price_data.reset_index()
+                price_data = price_data.set_index(['ticker', 'date'])
         else:
-            # For a single ticker compute indicator components without grouping.
+            # For a single ticker compute indicator components without grouping
             price_data.index = pd.to_datetime(price_data.index)
+            
+            # Calculate Tenkan-sen (Conversion Line)
             tenkan_high = price_data['high'].rolling(window=tenkan_period, min_periods=tenkan_period).max()
             tenkan_low = price_data['low'].rolling(window=tenkan_period, min_periods=tenkan_period).min()
             price_data['tenkan_sen'] = (tenkan_high + tenkan_low) / 2
-
+            
+            # Calculate Kijun-sen (Base Line)
             kijun_high = price_data['high'].rolling(window=kijun_period, min_periods=kijun_period).max()
             kijun_low = price_data['low'].rolling(window=kijun_period, min_periods=kijun_period).min()
             price_data['kijun_sen'] = (kijun_high + kijun_low) / 2
-
+            
+            # Calculate Senkou Span A (Leading Span A)
             senkou_a = (price_data['tenkan_sen'] + price_data['kijun_sen']) / 2
             price_data['senkou_span_a'] = senkou_a.shift(displacement)
-
+            
+            # Calculate Senkou Span B (Leading Span B)
             senkou_b_high = price_data['high'].rolling(window=senkou_b_period, min_periods=senkou_b_period).max()
             senkou_b_low = price_data['low'].rolling(window=senkou_b_period, min_periods=senkou_b_period).min()
             senkou_b = (senkou_b_high + senkou_b_low) / 2
             price_data['senkou_span_b'] = senkou_b.shift(displacement)
-
+            
+            # Calculate Chikou Span (Lagging Span)
             price_data['chikou_span'] = price_data['close'].shift(-displacement)
-
+            
+            # Store previous values for crossover detection
             price_data['prev_tenkan'] = price_data['tenkan_sen'].shift(1)
             price_data['prev_kijun'] = price_data['kijun_sen'].shift(1)
             price_data['prev_close'] = price_data['close'].shift(1)
+            
+            # Calculate cloud boundaries
             cloud_top = price_data[['senkou_span_a', 'senkou_span_b']].max(axis=1)
             cloud_bottom = price_data[['senkou_span_a', 'senkou_span_b']].min(axis=1)
             price_data['prev_cloud_top'] = cloud_top.shift(1)
             price_data['prev_cloud_bottom'] = cloud_bottom.shift(1)
+            
+            # Compute cloud bullishness
+            price_data['cloud_bullish'] = price_data['senkou_span_a'] > price_data['senkou_span_b']
+            
+            # Initialize signal column
+            price_data['signal'] = 0
+            
+            # Generate TK Cross signals
+            if self.params.get('use_tk_cross', True):
+                tk_cross_up = (price_data['tenkan_sen'] > price_data['kijun_sen']) & (price_data['prev_tenkan'] <= price_data['prev_kijun'])
+                tk_cross_down = (price_data['tenkan_sen'] < price_data['kijun_sen']) & (price_data['prev_tenkan'] >= price_data['prev_kijun'])
+                price_data.loc[tk_cross_up, 'signal'] = 1
+                if not self.params.get('long_only', True):
+                    price_data.loc[tk_cross_down, 'signal'] = -1
+                else:
+                    price_data.loc[tk_cross_down, 'signal'] = 0
+            
+            # Generate Price-Kijun Cross signals
+            if self.params.get('use_price_cross', False):
+                price_cross_up = (price_data['close'] > price_data['kijun_sen']) & (price_data['prev_close'] <= price_data['prev_kijun'])
+                price_cross_down = (price_data['close'] < price_data['kijun_sen']) & (price_data['prev_close'] >= price_data['prev_kijun'])
+                price_data.loc[price_cross_up, 'signal'] = 1
+                if not self.params.get('long_only', True):
+                    price_data.loc[price_cross_down, 'signal'] = -1
+                else:
+                    price_data.loc[price_cross_down, 'signal'] = 0
+            
+            # Generate Cloud Breakout signals
+            if self.params.get('use_cloud_breakouts', True):
+                cloud_breakout_up = (price_data['close'] > cloud_top) & (price_data['prev_close'] <= price_data['prev_cloud_top'])
+                cloud_breakout_down = (price_data['close'] < cloud_bottom) & (price_data['prev_close'] >= price_data['prev_cloud_bottom'])
+                price_data.loc[cloud_breakout_up, 'signal'] = 1
+                if not self.params.get('long_only', True):
+                    price_data.loc[cloud_breakout_down, 'signal'] = -1
+                else:
+                    price_data.loc[cloud_breakout_down, 'signal'] = 0
         
-        # Compute cloud bullishness.
-        price_data['cloud_bullish'] = price_data['senkou_span_a'] > price_data['senkou_span_b']
-        
-        # Initialize the raw signal column.
-        price_data['signal'] = 0
-        buy_signals = pd.Series(False, index=price_data.index)
-        sell_signals = pd.Series(False, index=price_data.index)
-        
-        # Generate TK Cross signals.
-        if self.params.get('use_tk_cross', True):
-            tk_cross_up = (price_data['tenkan_sen'] > price_data['kijun_sen']) & (price_data['prev_tenkan'] <= price_data['prev_kijun'])
-            tk_cross_down = (price_data['tenkan_sen'] < price_data['kijun_sen']) & (price_data['prev_tenkan'] >= price_data['prev_kijun'])
-            buy_signals |= tk_cross_up
-            sell_signals |= tk_cross_down
-        
-        # Generate Price-Kijun Cross signals.
-        if self.params.get('use_price_cross', False):
-            price_cross_up = (price_data['close'] > price_data['kijun_sen']) & (price_data['prev_close'] <= price_data['prev_kijun'])
-            price_cross_down = (price_data['close'] < price_data['kijun_sen']) & (price_data['prev_close'] >= price_data['prev_kijun'])
-            buy_signals |= price_cross_up
-            sell_signals |= price_cross_down
-        
-        # Generate Cloud Breakout signals.
-        if self.params.get('use_cloud_breakouts', True):
-            cloud_top = price_data[['senkou_span_a', 'senkou_span_b']].max(axis=1)
-            cloud_bottom = price_data[['senkou_span_a', 'senkou_span_b']].min(axis=1)
-            cloud_breakout_up = (price_data['close'] > cloud_top) & (price_data['prev_close'] <= price_data['prev_cloud_top'])
-            cloud_breakout_down = (price_data['close'] < cloud_bottom) & (price_data['prev_close'] >= price_data['prev_cloud_bottom'])
-            buy_signals |= cloud_breakout_up
-            sell_signals |= cloud_breakout_down
-        
-        # Set signals: +1 for buys and -1 for sells.
-        price_data.loc[buy_signals, 'signal'] = 1
-        if self.params.get('long_only', True):
-            price_data.loc[sell_signals, 'signal'] = 0
-        else:
-            price_data.loc[sell_signals, 'signal'] = -1
-        
-        # Drop rows with NA values that may result from rolling calculations.
+        # Drop rows with NA values that may result from rolling calculations
         price_data = price_data.dropna()
-
-        print(price_data)
         
-        # Apply risk management adjustments (stop loss, take profit, slippage, transaction cost).
+        # Apply risk management adjustments (stop loss, take profit, slippage, transaction cost)
         rm = RiskManager(
             stop_loss_pct=self.params.get("stop_loss_pct", 0.05),
             take_profit_pct=self.params.get("take_profit_pct", 0.10),
@@ -275,7 +334,7 @@ class IchimokuCloud(BaseStrategy):
         )
         result = rm.apply(price_data, initial_position=initial_position)
         
-        # If latest_only flag is set, return only the most recent signal row for each ticker.
+        # If latest_only flag is set, return only the most recent signal row for each ticker
         if latest_only:
             if multi_ticker:
                 result = result.groupby(level='ticker').tail(1)
