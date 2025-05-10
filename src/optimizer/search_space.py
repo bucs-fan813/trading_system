@@ -558,7 +558,7 @@ parabolic_sar_strat_search_space = {
     'atr_threshold': hp.uniform('atr_threshold', 0.8, 1.5),
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),
     'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.15),
     'trailing_stop_pct': hp.choice('trailing_stop_pct', [
         0.0, # Explicitly include 0 (disabled)
