@@ -1,0 +1,8 @@
+{
+    "consecutive_period": 2.0,
+    "di_lookback": 8.0,
+    "long_only": false,
+    "stop_loss_pct": 0.04011778000809175,
+    "take_profit_pct": 0.08179568923701311,
+    "trailing_stop_pct": 0.0
+}

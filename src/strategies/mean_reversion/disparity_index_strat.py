@@ -79,8 +79,8 @@ class DisparityIndexStrategy(BaseStrategy):
         super().__init__(db_config, params)
         
         # Strategy-specific parameters
-        self.di_lookback = params.get('di_lookback', 14)
-        self.consecutive_period = params.get('consecutive_period', 4)
+        self.di_lookback = int(params.get('di_lookback', 14))
+        self.consecutive_period = int(params.get('consecutive_period', 4))
         
         # Risk management parameters
         self.stop_loss_pct = params.get('stop_loss_pct', 0.05)
