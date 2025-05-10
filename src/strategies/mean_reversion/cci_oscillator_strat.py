@@ -101,14 +101,14 @@ class CCIStrategy(BaseStrategy):
         """
         if params['cci_upper_band'] <= params['cci_lower_band']:
             raise ValueError("cci_upper_band must be greater than cci_lower_band")
-        if params['cci_period'] < 2:
+        if int(params['cci_period']) < 2:
             raise ValueError("cci_period must be at least 2")
         if not (0 < params['stop_loss_pct'] < 1):
             raise ValueError("stop_loss_pct must be between 0 and 1")
         if not (0 < params['take_profit_pct'] < 1):
             raise ValueError("take_profit_pct must be between 0 and 1")
     
-    def generate_signals(self, tickers: Union[str, List[str]], start_date: Optional[str] = None,
+    def generate_signals(self, ticker: Union[str, List[str]], start_date: Optional[str] = None,
                          end_date: Optional[str] = None, initial_position: int = 0,
                          latest_only: bool = False) -> pd.DataFrame:
         """
@@ -133,7 +133,7 @@ class CCIStrategy(BaseStrategy):
              or a list of tickers.
         
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
             initial_position (int): Starting trading position (0 for none, 1 for long, -1 for short).
@@ -147,12 +147,12 @@ class CCIStrategy(BaseStrategy):
             if self.params['long_only'] and initial_position not in {0, 1}:
                 raise ValueError("Long-only strategy requires initial_position ∈ {0, 1}")
             
-            hist_data = self._get_data(tickers, start_date, end_date, latest_only)
+            hist_data = self._get_data(ticker, start_date, end_date, latest_only)
             if hist_data.empty:
                 return pd.DataFrame()
             
             # Process for a single ticker
-            if isinstance(tickers, str):
+            if isinstance(ticker, str):
                 signals = self._calculate_cci_signals(hist_data)
                 risk_managed = self.risk_manager.apply(signals, initial_position)
                 return risk_managed[-1:] if latest_only else risk_managed
@@ -167,13 +167,15 @@ class CCIStrategy(BaseStrategy):
                     if latest_only:
                         risk_managed = risk_managed.iloc[[-1]]
                     frames.append(risk_managed)
-                return pd.concat(frames)
+                result_df = pd.concat(frames)
+                result_df = result_df.reset_index().set_index(['ticker', 'date']).sort_index()
+                return result_df
         
         except Exception as e:
             self.logger.error(f"Signal generation failed: {e}")
             return pd.DataFrame()
     
-    def _get_data(self, tickers: Union[str, List[str]], start_date: Optional[str],
+    def _get_data(self, ticker: Union[str, List[str]], start_date: Optional[str],
                   end_date: Optional[str], latest_only: bool) -> pd.DataFrame:
         """
         Retrieve historical price data for the given ticker(s).
@@ -182,7 +184,7 @@ class CCIStrategy(BaseStrategy):
         For the latest signal forecast, retrieves a reduced window (3 × cci_period) to ensure signal stability.
         
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
             start_date (str, optional): Data retrieval start date (YYYY-MM-DD).
             end_date (str, optional): Data retrieval end date (YYYY-MM-DD).
             latest_only (bool): Flag to indicate whether only the most recent data window is needed.
@@ -193,14 +195,14 @@ class CCIStrategy(BaseStrategy):
         """
         if latest_only:
             return self.get_historical_prices(
-                tickers,
-                lookback=3 * self.params['cci_period'],
+                ticker,
+                lookback=3 * int(self.params['cci_period']),
                 data_source=self.params['data_source']
             )
         else:
             return self.get_historical_prices(
-                tickers,
-                lookback=self.params['lookback_period'],
+                ticker,
+                lookback=int(self.params['lookback_period']),
                 data_source=self.params['data_source'],
                 from_date=start_date,
                 to_date=end_date
@@ -216,7 +218,7 @@ class CCIStrategy(BaseStrategy):
         Returns:
             bool: True if at least (cci_period + 1) records are available; otherwise, False.
         """
-        min_records = self.params['cci_period'] + 1
+        min_records = int(self.params['cci_period']) + 1
         if len(data) < min_records:
             self.logger.warning(f"Insufficient data: {len(data)} records, required {min_records}")
             return False
@@ -248,10 +250,10 @@ class CCIStrategy(BaseStrategy):
         tp = (data['high'] + data['low'] + data['close']) / 3
         
         # Compute rolling Simple Moving Average (SMA) of TP
-        sma = tp.rolling(window=self.params['cci_period']).mean()
+        sma = tp.rolling(window=int(self.params['cci_period'])).mean()
         
         # Compute rolling Mean Absolute Deviation (MAD) of TP
-        mad = tp.rolling(window=self.params['cci_period']).apply(
+        mad = tp.rolling(window=int(self.params['cci_period'])).apply(
             lambda x: np.abs(x - x.mean()).mean(),
             raw=True
         )
@@ -270,8 +272,8 @@ class CCIStrategy(BaseStrategy):
         
         # Generate trading signals based on CCI crossovers
         prev_cci = signals['cci'].shift()
-        buy = (prev_cci < self.params['cci_lower_band']) & (signals['cci'] > self.params['cci_lower_band'])
-        sell = (prev_cci > self.params['cci_upper_band']) & (signals['cci'] < self.params['cci_upper_band'])
+        buy = (prev_cci < int(self.params['cci_lower_band'])) & (signals['cci'] > int(self.params['cci_lower_band']))
+        sell = (prev_cci > int(self.params['cci_upper_band'])) & (signals['cci'] < int(self.params['cci_upper_band']))
         signals['signal'] = np.select([buy, sell], [1, -1], default=0)
         
         # In long-only mode, replace sell signals with 0 (exit)
@@ -280,8 +282,8 @@ class CCIStrategy(BaseStrategy):
         
         # Compute signal strength as the difference between the current CCI and the threshold crossed
         signals['signal_strength'] = signals['cci'] - np.where(
-            buy, self.params['cci_lower_band'],
-            np.where(sell, self.params['cci_upper_band'], np.nan)
+            buy, int(self.params['cci_lower_band']),
+            np.where(sell, int(self.params['cci_upper_band']), np.nan)
         )
         
         return signals
