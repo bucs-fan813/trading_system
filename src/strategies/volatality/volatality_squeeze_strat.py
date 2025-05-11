@@ -203,7 +203,7 @@ class VolatilitySqueeze(BaseStrategy):
             res.loc[squeeze_off & (momentum < 0), 'signal'] = -1
 
             # Normalize signal strength using the rolling standard deviation of momentum.
-            res['signal_strength'] = 0
+            res['signal_strength'] = 0.0
             rolling_mom_std = momentum.rolling(window=20).std() + 1e-6
             res.loc[res['signal'] != 0, 'signal_strength'] = np.abs(momentum[res['signal'] != 0]) / rolling_mom_std[res['signal'] != 0]
 
@@ -250,8 +250,8 @@ class VolatilitySqueeze(BaseStrategy):
                         grp_res = grp_res.iloc[[-1]]
                     results.append(grp_res)
             result = pd.concat(results) if results else pd.DataFrame()
-            if 'ticker' not in result.columns:
-                result = result.reset_index(level=0)
+            if 'ticker' in result.columns:
+                result = result.reset_index().set_index(['ticker', 'date']).sort_index()
         return result
 
     def _calculate_atr(self, price_data: pd.DataFrame, period: int = 14) -> pd.Series:
