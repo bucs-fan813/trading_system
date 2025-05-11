@@ -86,7 +86,7 @@ class BollingerBandsStrategy(BaseStrategy):
             params (dict, optional): Dictionary of strategy-specific parameters.
         """
         super().__init__(db_config, params)
-        self.window = self.params.get('window', 20)
+        self.window = int(self.params.get('window', 20))
         self.std_dev = self.params.get('std_dev', 2.0)
         self.long_only = self.params.get('long_only', True)
         # Risk management parameters:
