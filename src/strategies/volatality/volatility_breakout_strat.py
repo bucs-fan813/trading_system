@@ -87,7 +87,7 @@ class VolatilityBreakout(BaseStrategy):
         super().__init__(db_config, default_params)
 
     def generate_signals(self,
-                         tickers: Union[str, List[str]],
+                         ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -115,7 +115,7 @@ class VolatilityBreakout(BaseStrategy):
         slippage, and transaction cost adjustments via the RiskManager.
 
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
             start_date (str, optional): Backtesting start date in 'YYYY-MM-DD' format.
             end_date (str, optional): Backtesting end date in 'YYYY-MM-DD' format.
             initial_position (int): Starting trading position (default: 0).
@@ -126,7 +126,7 @@ class VolatilityBreakout(BaseStrategy):
             normalized signal strength, and risk-managed trading performance metrics.
         """
         # Retrieve historical price data from the database.
-        price_data = self.get_historical_prices(tickers, lookback=252, from_date=start_date, to_date=end_date)
+        price_data = self.get_historical_prices(ticker, lookback=252, from_date=start_date, to_date=end_date)
 
         # Validate that there is sufficient data for computation.
         if ("ticker" in price_data.index.names and 
@@ -136,7 +136,7 @@ class VolatilityBreakout(BaseStrategy):
             self.logger.warning("Insufficient data to generate volatility breakout signals for provided ticker(s).")
             return pd.DataFrame()
 
-        lb = self.params['lookback_period']
+        lb = int(self.params['lookback_period'])
         vm = self.params['volatility_multiplier']
         eps = 1e-6  # To prevent division by zero
 
@@ -159,7 +159,7 @@ class VolatilityBreakout(BaseStrategy):
         else:
             # Single ticker processing.
             if self.params['use_atr']:
-                volatility = self._calculate_atr(price_data, period=self.params['atr_period'])
+                volatility = self._calculate_atr(price_data, period=int(self.params['atr_period']))
             else:
                 volatility = price_data['close'].rolling(window=lb, min_periods=lb).std()
             center_line = price_data['close'].rolling(window=lb, min_periods=lb).mean()
@@ -181,7 +181,7 @@ class VolatilityBreakout(BaseStrategy):
         result.loc[result['close'] < result['lower_band'], 'signal'] = -1
 
         # Compute the signal strength (normalized breakout magnitude).
-        result['signal_strength'] = 0
+        result['signal_strength'] = 0.0
         result.loc[result['signal'] == 1, 'signal_strength'] = (
             (result['close'] - result['upper_band']) / (result['volatility'] + eps)
         )

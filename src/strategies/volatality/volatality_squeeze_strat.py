@@ -141,12 +141,12 @@ class VolatilitySqueeze(BaseStrategy):
             price_data = self.get_historical_prices(ticker, lookback=252)
 
         # Define technical indicator parameters.
-        bb_period = self.params['bb_period']
+        bb_period = int(self.params['bb_period'])
         bb_std_val = self.params['bb_std']
-        kc_period = self.params['kc_period']
-        kc_atr_period = self.params['kc_atr_period']
+        kc_period = int(self.params['kc_period'])
+        kc_atr_period = int(self.params['kc_atr_period'])
         kc_multiplier = self.params['kc_multiplier']
-        momentum_period = self.params['momentum_period']
+        momentum_period = int(self.params['momentum_period'])
 
         # Require a minimum number of periods to ensure rolling calculations work.
         min_periods = max(bb_period, kc_period, kc_atr_period, momentum_period) + 10
