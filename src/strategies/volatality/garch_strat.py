@@ -111,7 +111,7 @@ class GARCHModel(BaseStrategy):
         super().__init__(db_config, default_params)
     
     def generate_signals(self,
-                         tickers: Union[str, List[str]],
+                         ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -125,7 +125,7 @@ class GARCHModel(BaseStrategy):
         and then risk management (incorporating slippage, transaction costs, stop-loss and take-profit) is applied.
         
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of tickers.
+            ticker (str or List[str]): Stock ticker symbol or list of tickers.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format. An extra data buffer 
                                         is retrieved prior to start_date for model calibration.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
@@ -136,10 +136,10 @@ class GARCHModel(BaseStrategy):
             pd.DataFrame: DataFrame containing price data, forecasted metrics, generated signals, signal strength,
                           and risk-managed performance metrics.
         """
-        if isinstance(tickers, str):
-            tickers_list = [tickers]
+        if isinstance(ticker, str):
+            tickers_list = [ticker]
         else:
-            tickers_list = tickers
+            tickers_list = ticker
         
         results = []
         for tic in tickers_list:
@@ -185,7 +185,7 @@ class GARCHModel(BaseStrategy):
         # Combine results from all tickers.
         if results:
             final_result = pd.concat(results)
-            final_result.sort_index(inplace=True)
+            final_result = final_result.reset_index().set_index(['ticker', 'date']).sort_index()
             return final_result
         else:
             return pd.DataFrame()
