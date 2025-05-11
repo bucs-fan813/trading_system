@@ -78,9 +78,12 @@ class KeltnerChannelStrategy(BaseStrategy):
         self.params.setdefault('transaction_cost', 0.001)
         self.params.setdefault('long_only', True)
 
+        self.params.kc_span = int(self.params['kc_span'])
+        self.params.atr_span = int(self.params['atr_span'])
+
         # Ensure non-risk parameters are positive
         for k, v in self.params.items():
-            if k not in ['stop_loss', 'take_profit'] and v <= 0:
+            if k not in ['stop_loss', 'take_profit', 'trailing_stop_pct'] and v <= 0:
                 raise ValueError(f"Parameter {k} must be positive")
         if self.params['stop_loss'] < 0 or self.params['take_profit'] < 0:
             raise ValueError("Risk parameters cannot be negative")
@@ -100,7 +103,7 @@ class KeltnerChannelStrategy(BaseStrategy):
             transaction_cost_pct=self.params['transaction_cost']
         )
 
-    def generate_signals(self, tickers: Union[str, List[str]],
+    def generate_signals(self, ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -118,7 +121,7 @@ class KeltnerChannelStrategy(BaseStrategy):
         supports retrieving only the latest signal for end-of-day trading decisions.
         
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of ticker symbols.
+            ticker (str or List[str]): Stock ticker symbol or list of ticker symbols.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
             initial_position (int): Starting trading position (0 for no position, 1 for long, -1 for short).
@@ -131,14 +134,14 @@ class KeltnerChannelStrategy(BaseStrategy):
         Raises:
             DataRetrievalError: If data retrieval or signal generation fails.
         """
-        self.logger.info(f"Processing tickers: {tickers} with parameters: {self.params}")
+        self.logger.info(f"Processing ticker: {ticker} with parameters: {self.params}")
 
         # Determine extra lookback period for stable indicator calculation.
         max_lookback = max(self.params['kc_span'], self.params['atr_span'])
         required_bars = max_lookback * 2  # Buffer period
 
         try:
-            data = self._fetch_data(tickers, start_date, end_date, required_bars, latest_only)
+            data = self._fetch_data(ticker, start_date, end_date, required_bars, latest_only)
             if data.empty:
                 return pd.DataFrame()
 
@@ -156,9 +159,9 @@ class KeltnerChannelStrategy(BaseStrategy):
 
         except Exception as e:
             self.logger.error(f"Signal generation failed: {str(e)}")
-            raise DataRetrievalError(f"Failed processing tickers: {tickers}") from e
+            raise DataRetrievalError(f"Failed processing ticker: {ticker}") from e
 
-    def _fetch_data(self, tickers: Union[str, List[str]],
+    def _fetch_data(self, ticker: Union[str, List[str]],
                     start_date: Optional[str],
                     end_date: Optional[str],
                     lookback: int,
@@ -170,7 +173,7 @@ class KeltnerChannelStrategy(BaseStrategy):
         is extended backwards by the lookback period.
         
         Args:
-            tickers (str or List[str]): Single or multiple ticker symbols.
+            ticker (str or List[str]): Single or multiple ticker symbols.
             start_date (str, optional): Backtest start date in 'YYYY-MM-DD' format.
             end_date (str, optional): Backtest end date in 'YYYY-MM-DD' format.
             lookback (int): Number of extra bars to use for stable indicator computation.
@@ -180,13 +183,13 @@ class KeltnerChannelStrategy(BaseStrategy):
             pd.DataFrame: DataFrame containing historical price data.
         """
         if latest_only:
-            return self.get_historical_prices(tickers, lookback=lookback)
+            return self.get_historical_prices(ticker, lookback=lookback)
 
         if start_date and end_date:
             adjusted_start = (pd.to_datetime(start_date) - timedelta(days=lookback)).strftime('%Y-%m-%d')
-            return self.get_historical_prices(tickers, from_date=adjusted_start, to_date=end_date)
+            return self.get_historical_prices(ticker, from_date=adjusted_start, to_date=end_date)
         
-        return self.get_historical_prices(tickers, lookback=lookback)
+        return self.get_historical_prices(ticker, lookback=lookback)
 
     def _calculate_components(self, prices: pd.DataFrame) -> pd.DataFrame:
         """
