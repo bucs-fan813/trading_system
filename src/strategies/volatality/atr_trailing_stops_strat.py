@@ -140,7 +140,7 @@ class ATRTrailingStops(BaseStrategy):
 
         # Process data for a single ticker or multiple tickers
         if isinstance(tickers, str):
-            if not self._validate_data(price_data, min_records=self.params['atr_period'] + 10):
+            if not self._validate_data(price_data, min_records=int(self.params['atr_period']) + 10):
                 self.logger.warning(f"Insufficient data for {tickers} to generate ATR trailing stops signals")
                 return pd.DataFrame()
             groups = [(tickers, price_data)]
@@ -156,8 +156,8 @@ class ATRTrailingStops(BaseStrategy):
         for ticker, df in groups:
             df = df.copy().reset_index(level=0, drop=True).sort_index()
             # Calculate ATR and compute SMA for trend filtering
-            atr = self._calculate_atr(df, period=self.params['atr_period'])
-            sma = df['close'].rolling(window=self.params['trend_period'], min_periods=self.params['trend_period']).mean()
+            atr = self._calculate_atr(df, period=int(self.params['atr_period']))
+            sma = df['close'].rolling(window=int(self.params['trend_period']), min_periods=int(self.params['trend_period'])).mean()
             trend_up = df['close'] > sma
 
             # Initialize working DataFrame with price and indicator data
@@ -242,6 +242,7 @@ class ATRTrailingStops(BaseStrategy):
 
             # Generate signals from changes in the position flags.
             df_signals['signal'] = 0
+
             long_entry = df_signals['in_long'] & ~df_signals['in_long'].shift(1).fillna(False)
             short_entry = df_signals['in_short'] & ~df_signals['in_short'].shift(1).fillna(False)
             df_signals.loc[long_entry, 'signal'] = 1
@@ -274,7 +275,7 @@ class ATRTrailingStops(BaseStrategy):
 
         # Concatenate all ticker signal DataFrames and sort the result.
         final_signals = pd.concat(signal_dfs)
-        final_signals.sort_index(inplace=True)
+        final_signals = final_signals.reset_index().set_index(['ticker', 'date']).sort_index()
 
         # If only the latest signal is required, filter by the last row per ticker.
         if latest_only:
