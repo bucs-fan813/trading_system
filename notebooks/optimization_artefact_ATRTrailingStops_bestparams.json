@@ -1,0 +1,9 @@
+{
+    "atr_multiplier": 3.252627134632755,
+    "atr_period": 7.0,
+    "long_only": true,
+    "stop_loss_pct": 0.06817840065100186,
+    "take_profit_pct": 0.11332080719932267,
+    "trailing_stop_pct": 0.0,
+    "trend_period": 26.0
+}
