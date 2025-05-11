@@ -116,10 +116,10 @@ class WilliamsRStrategy(BaseStrategy):
             pd.DataFrame: A DataFrame containing price data, indicator values, raw signals, risk-managed positions, 
             realized returns, cumulative returns, and exit types.
         """
-        wr_period = self.params.get("wr_period", 14)
-        oversold = self.params.get("oversold_threshold", -80)
-        overbought = self.params.get("overbought_threshold", -20)
-        data_lookback = self.params.get("data_lookback", 252)
+        wr_period = int(self.params.get("wr_period", 14))
+        oversold = int(self.params.get("oversold_threshold", -80))
+        overbought = int(self.params.get("overbought_threshold", -20))
+        data_lookback = int(self.params.get("data_lookback", 252))
 
         if oversold >= overbought:
             raise ValueError("oversold_threshold must be less than overbought_threshold")
@@ -178,7 +178,11 @@ class WilliamsRStrategy(BaseStrategy):
             
             # Apply risk management groupwise.
             df_risk = df_processed.groupby('ticker', group_keys=False).apply(lambda grp: risk_manager.apply(grp, initial_position))
-            
+            df_risk = df_risk.set_index('ticker', append=True)
+            df_risk = df_risk.reorder_levels(['ticker', 'date'])
+            df_risk = df_risk.sort_index(level=['ticker', 'date'])
+
+
             if latest_only:
                 # Return only the latest row per ticker for end-of-day forecasting.
                 df_risk = df_risk.groupby('ticker', group_keys=False).tail(1)
