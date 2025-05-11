@@ -120,6 +120,7 @@ class SupertrendStrategy(BaseStrategy):
                 group['ticker'] = t
                 groups.append(group)
             signals = pd.concat(groups).sort_index()
+            signals = signals.reset_index().set_index(['ticker', 'date']).sort_index()
             if latest_only:
                 signals = signals.groupby('ticker', group_keys=False).tail(1)
         else:
@@ -154,7 +155,7 @@ class SupertrendStrategy(BaseStrategy):
         Returns:
             pd.DataFrame: DataFrame containing historical OHLC data (and 'ticker' column for multi-ticker).
         """
-        lookback = self.params['lookback']
+        lookback = int(self.params['lookback'])
         min_records = max(lookback * 3, 252)  # Minimum records for indicator stability.
         try:
             return self.get_historical_prices(
@@ -180,7 +181,7 @@ class SupertrendStrategy(BaseStrategy):
                           'tr', 'atr', 'basic_upper', 'basic_lower',
                           'final_upper', 'final_lower', 'supertrend', and 'trend'.
         """
-        lookback = self.params['lookback']
+        lookback = int(self.params['lookback'])
         multiplier = self.params['multiplier']
 
         # Calculate True Range (TR) and then the Average True Range (ATR)

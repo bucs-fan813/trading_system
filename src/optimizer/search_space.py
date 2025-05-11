@@ -649,7 +649,10 @@ keltner_channel_strat_search_space = {
     # Risk management parameters
     'stop_loss': hp.uniform('stop_loss', 0.02, 0.08),  # Stop loss percentage
     'take_profit': hp.uniform('take_profit', 0.04, 0.15),  # Take profit percentage
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop percentage
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]),
 }
 
 supertrend_strat_search_space = {
@@ -659,13 +662,12 @@ supertrend_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Long-only or long-short
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.07),  # Stop-loss (2-7%)
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take-profit (4-15%)
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.05),  # Trailing stop (0-5%)
-    
-    # Market friction parameters - adapted for Indian markets
-    'slippage_pct': hp.loguniform('slippage_pct', np.log(0.0005), np.log(0.002)),  # 0.05-0.2%
-    'transaction_cost_pct': hp.loguniform('transaction_cost_pct', np.log(0.0005), np.log(0.003))  # 0.05-0.3%
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Stop-loss (2-7%)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Take-profit (4-15%) # 0.05-0.2%
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]),
 }
 
 volatality_squeeze_strat_search_space = {
