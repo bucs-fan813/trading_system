@@ -1,0 +1,8 @@
+{
+    "long_only": false,
+    "lookback": 12.0,
+    "multiplier": 2.436372891823068,
+    "stop_loss_pct": 0.07238908221753962,
+    "take_profit_pct": 0.13706117306446255,
+    "trailing_stop_pct": 0.05007021674970881
+}
