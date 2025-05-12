@@ -78,8 +78,8 @@ class KeltnerChannelStrategy(BaseStrategy):
         self.params.setdefault('transaction_cost', 0.001)
         self.params.setdefault('long_only', True)
 
-        self.params.kc_span = int(self.params['kc_span'])
-        self.params.atr_span = int(self.params['atr_span'])
+        self.params['kc_span'] = int(self.params['kc_span'])
+        self.params['atr_span'] = int(self.params['atr_span'])
 
         # Ensure non-risk parameters are positive
         for k, v in self.params.items():
