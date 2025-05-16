@@ -1,8 +1,0 @@
-{
-    "long_only": false,
-    "std_dev": 2.346132795904312,
-    "stop_loss_pct": 0.04239744756325602,
-    "take_profit_pct": 0.13748374337220912,
-    "trailing_stop_pct": 0.0,
-    "window": 23.0
-}
