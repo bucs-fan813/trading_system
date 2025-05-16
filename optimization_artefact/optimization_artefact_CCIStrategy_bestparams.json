@@ -1,0 +1,9 @@
+{
+    "cci_lower_band": -90.0,
+    "cci_period": 23.0,
+    "cci_upper_band": 175.0,
+    "long_only": true,
+    "stop_loss_pct": 0.0379249440595984,
+    "take_profit_pct": 0.14030288471961933,
+    "trailing_stop_pct": 0.0
+}
