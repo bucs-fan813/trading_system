@@ -194,6 +194,7 @@ class StrategyOptimizer:
             logger.debug(f"Generating signals for fold: {fold_start.date()} to {fold_end.date()}")
             
             print(self.tickers)
+            print(len(self.tickers))
             print(fold_start.strftime("%Y-%m-%d"))
             print(fold_end.strftime("%Y-%m-%d"))
             print(self.initial_position)
