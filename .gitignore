@@ -13,5 +13,4 @@ data/
 mlruns/
 cache_dir/
 hyperopt_cache/
-*.csv
 
