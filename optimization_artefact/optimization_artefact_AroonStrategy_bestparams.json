@@ -1,0 +1,10 @@
+{
+    "aroon_down_threshold": 37.0,
+    "aroon_up_threshold": 71.0,
+    "long_only": true,
+    "lookback": 48.0,
+    "signal_smoothing": 5.0,
+    "stop_loss_pct": 0.0507329901484215,
+    "take_profit_pct": 0.06371343216338214,
+    "trailing_stop_pct": 0.0
+}

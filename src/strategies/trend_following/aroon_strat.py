@@ -98,7 +98,7 @@ class AroonStrategy(BaseStrategy):
 
         # Apply smoothing if specified
         signal_smoothing = int(self.params.get('signal_smoothing', 1))
-        print(f"Signal smoothing: {signal_smoothing}")
+        
         if signal_smoothing > 1:
             aroon_up = aroon_up.rolling(window=signal_smoothing).mean()
             aroon_down = aroon_down.rolling(window=signal_smoothing).mean()
@@ -169,7 +169,7 @@ class AroonStrategy(BaseStrategy):
             # Apply the Risk Manager to get risk-managed positions, returns, and exit types.
             df = self.risk_manager.apply(df, initial_position=initial_position)
             # Calculate daily returns and derive strategy returns.
-            df['daily_return'] = df['close'].pct_change().fillna(0)
+            df['daily_return'] = df['close'].pct_change(fill_method=None).fillna(0)
             df['strategy_return'] = df['position'].shift(1) * df['daily_return']
             # Rename risk management specific columns for downstream consistency.
             df.rename(columns={
