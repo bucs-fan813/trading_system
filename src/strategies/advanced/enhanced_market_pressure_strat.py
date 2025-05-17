@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, Optional, Union, List
-from scipy.stats import beta, norm, kstest
+from scipy.stats import beta, kstest, norm
 import warnings
 
 from src.strategies.base_strat import BaseStrategy
@@ -355,57 +355,103 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         # Return the needed columns
         return df[['open', 'close', 'high', 'low', 'norm_pos', 'market_pressure', 
                    'pressure_significance', 'divergence', 'signal', 'signal_strength']]
-    
+
     def _fit_beta_pressure(self, positions, weights=None):
         """
         Fit a Beta distribution to positions and calculate pressure metrics.
-        
-        The Beta distribution is well-suited for modeling values in the [0,1] range,
-        which makes it ideal for our normalized positions.
-        
+        The significance test is now against a Uniform[0,1] distribution
+        to determine if the observed positions are non-random.
+
         Args:
             positions (np.array): Normalized positions in [0,1] range.
             weights (np.array, optional): Weights for each position.
-            
+
         Returns:
             tuple: (buying_pressure, selling_pressure, market_pressure, significance)
         """
-        # Clip values to ensure they're in the (0,1) range
-        positions = np.clip(positions, 1e-6, 1-1e-6)
-        
+        # Clip values to ensure they're in the (0,1) range for beta distribution
+        # and also for the KS test against 'uniform' which expects values in [0,1]
+        # Using a slightly wider clip for KS test against uniform, as it can handle 0 and 1.
+        beta_positions = np.clip(positions, 1e-6, 1 - 1e-6) # For beta fitting
+        ks_positions = np.clip(positions, 0, 1) # For KS test against uniform
+
         # Default equal weights if none provided
-        if weights is None:
-            weights = np.ones_like(positions) / len(positions)
-        
-        # Method of moments with weights
-        mean = np.sum(weights * positions)
-        var = np.sum(weights * (positions - mean)**2)
-        
+        if weights is None or len(positions) == 0: # Added check for empty positions
+            if len(positions) == 0:
+                # If no positions, cannot fit, return neutral and no significance
+                return 0.5, 0.5, 0.0, 0.0
+            weights = np.ones_like(beta_positions) / len(beta_positions)
+        elif np.sum(weights) == 0: # Handle case where sum of weights is zero
+            weights = np.ones_like(beta_positions) / len(beta_positions)
+
+
+        # Method of moments with weights for Beta distribution fitting
+        # Using beta_positions for fitting the Beta distribution
+        mean = np.sum(weights * beta_positions)
+        var = np.sum(weights * (beta_positions - mean)**2)
+
         # Safeguard against zero variance
         var = max(var, 1e-9)
-        
-        # Compute alpha and beta parameters
-        alpha = mean * (mean * (1 - mean) / var - 1)
-        beta_param = (1 - mean) * (mean * (1 - mean) / var - 1)
-        
+
+        # Compute alpha and beta parameters for the Beta distribution
+        # (mean * (1-mean) / var) must be > 1 for alpha and beta to be positive
+        # Add a small epsilon if it's too close to 1 or less.
+        factor = (mean * (1 - mean) / var)
+        if factor <= 1:
+            # This can happen with very low variance or mean near 0 or 1
+            # Fallback to a weakly informative prior or simpler pressure calc
+            # For now, let's calculate pressure based on mean if Beta params are tricky
+            simple_buying_pressure = mean # If mean is high, buying pressure is high
+            simple_selling_pressure = 1 - mean
+            simple_market_pressure = simple_buying_pressure - simple_selling_pressure
+            
+            # Significance calculation can still proceed with ks_positions
+            try:
+                # Test if ks_positions deviate significantly from a Uniform[0,1] distribution
+                # A Uniform[0,1] distribution is equivalent to a Beta(1,1) distribution
+                # For scipy.stats.kstest, the 'uniform' distribution is defined on [0,1] by default
+                _stat, p_value = kstest(ks_positions, 'uniform')
+                significance = 1 - p_value  # High significance if p_value is low (i.e., not uniform)
+            except Exception:
+                # Fallback significance based on standard deviation
+                # 0.288675 is approx. sqrt(1/12), the std of Uniform[0,1]
+                if len(ks_positions) > 1:
+                    std_dev_positions = np.std(ks_positions)
+                    significance = 1 - np.min([1.0, std_dev_positions / 0.288675])
+                else:
+                    significance = 0.0 # Not enough data for std dev
+            return simple_buying_pressure, simple_selling_pressure, simple_market_pressure, significance
+
+        alpha = mean * (factor - 1)
+        beta_param = (1 - mean) * (factor - 1)
+
         # Ensure parameters are positive
         alpha = max(alpha, 0.01)
         beta_param = max(beta_param, 0.01)
-        
-        # Calculate pressure metrics
+
+        # Calculate pressure metrics using the fitted Beta distribution
         buying_pressure = 1 - beta.cdf(0.5, alpha, beta_param)
         selling_pressure = beta.cdf(0.5, alpha, beta_param)
         market_pressure = buying_pressure - selling_pressure
-        
-        # Calculate statistical significance
+
+        # Calculate statistical significance by testing against a Uniform distribution
         try:
-            # Use KS test for significance
-            ks_stat, p_value = kstest(positions, 'beta', args=(alpha, beta_param))
-            significance = 1 - p_value
-        except:
-            # Fallback to a simplified method if KS test fails
-            significance = 1 - np.min([1.0, np.std(positions) / 0.2889])  # 0.2889 is std of uniform dist on [0,1]
-        
+            # Test if ks_positions deviate significantly from a Uniform[0,1] distribution
+            # A Uniform[0,1] distribution is equivalent to a Beta(1,1) distribution
+            # For scipy.stats.kstest, the 'uniform' distribution is defined on [0,1] by default
+            _stat, p_value = kstest(ks_positions, 'uniform')
+            significance = 1 - p_value  # High significance if p_value is low (i.e., not uniform)
+        except Exception: # Catch more generic exceptions from kstest
+            # Fallback significance based on standard deviation
+            # 0.288675 is approx. sqrt(1/12), the std of Uniform[0,1]
+            if len(ks_positions) > 1:
+                std_dev_positions = np.std(ks_positions)
+                # Ensure std_dev_positions is not zero to avoid division by zero if 0.288675 is also zero (highly unlikely)
+                # or if std_dev_positions is extremely small leading to large ratio
+                significance = 1 - np.min([1.0, std_dev_positions / 0.288675 if 0.288675 > 1e-9 else 1.0])
+            else:
+                significance = 0.0 # Not enough data for std dev
+
         return buying_pressure, selling_pressure, market_pressure, significance
     
     def _fit_multiple_distributions(self, positions, weights=None):
