@@ -1,0 +1,10 @@
+{
+    "d_period": 3.0,
+    "k_period": 11.0,
+    "long_only": true,
+    "overbought": 80.0,
+    "oversold": 24.0,
+    "stop_loss_pct": 0.058473715739728135,
+    "take_profit_pct": 0.049067578373034514,
+    "trailing_stop_pct": 0.06888866137781012
+}
