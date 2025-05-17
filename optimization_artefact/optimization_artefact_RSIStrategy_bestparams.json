@@ -1,0 +1,9 @@
+{
+    "long_only": true,
+    "overbought": 72.41122519924649,
+    "oversold": 25.454084525878457,
+    "rsi_period": 10.0,
+    "stop_loss_pct": 0.044300593381116325,
+    "take_profit_pct": 0.14081256973926123,
+    "trailing_stop_pct": 0.0
+}
