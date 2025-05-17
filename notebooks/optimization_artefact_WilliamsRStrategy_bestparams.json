@@ -1,0 +1,10 @@
+{
+    "data_lookback": 475.0,
+    "long_only": true,
+    "overbought_threshold": -17.05418501914682,
+    "oversold_threshold": -78.94130517439866,
+    "stop_loss_pct": 0.07977048784139437,
+    "take_profit_pct": 0.10733674771409797,
+    "trailing_stop_pct": 0.07295336157728745,
+    "wr_period": 24.0
+}
