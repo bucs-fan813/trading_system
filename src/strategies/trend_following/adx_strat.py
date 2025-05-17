@@ -12,7 +12,7 @@ from src.strategies.risk_management import RiskManager
 # Initialize module logger
 logger = logging.getLogger(__name__)
 
-@njit(parallel=True) # Enable parallel execution hint for Numba if loops are independent
+@njit() # Enable parallel execution hint for Numba if loops are independent
 def _calculate_wilder_smooth(series: np.ndarray, period: int) -> np.ndarray:
     """
     Calculates Wilder's smoothing (Recursive Moving Average).
@@ -376,7 +376,7 @@ class ADXStrategy(BaseStrategy):
                 df_processed = self.risk_manager.apply(df_processed, initial_position)
 
                 # Calculate standard performance columns
-                df_processed['daily_return'] = df_processed['close'].pct_change().fillna(0)
+                df_processed['daily_return'] = df_processed['close'].pct_change(fill_method=None).fillna(0)
                 if 'position' in df_processed.columns:
                      df_processed['strategy_return'] = df_processed['daily_return'] * df_processed['position'].shift(1).fillna(0)
                 else:
@@ -410,7 +410,7 @@ class ADXStrategy(BaseStrategy):
                     df_processed = self.risk_manager.apply(df_processed, ticker_initial_pos)
 
                     # Calculate standard performance columns
-                    df_processed['daily_return'] = df_processed['close'].pct_change().fillna(0)
+                    df_processed['daily_return'] = df_processed['close'].pct_change(fill_method=None).fillna(0)
                     if 'position' in df_processed.columns:
                         df_processed['strategy_return'] = df_processed['daily_return'] * df_processed['position'].shift(1).fillna(0)
                     else:
