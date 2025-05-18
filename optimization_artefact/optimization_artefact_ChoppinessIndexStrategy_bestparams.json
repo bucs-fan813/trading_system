@@ -1,0 +1,10 @@
+{
+    "ci_period": 23.0,
+    "long_only": true,
+    "macd_fast": 15.0,
+    "macd_slow": 31.0,
+    "macd_smooth": 9.0,
+    "stop_loss_pct": 0.06539896090856778,
+    "take_profit_pct": 0.09155244479651982,
+    "trailing_stop_pct": 0.0528891646948976
+}
