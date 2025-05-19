@@ -1,0 +1,13 @@
+{
+    "displacement": 32.0,
+    "kijun_period": 20.0,
+    "long_only": false,
+    "senkou_b_period": 54.0,
+    "stop_loss_pct": 0.0744390246501686,
+    "take_profit_pct": 0.0676511266767309,
+    "tenkan_period": 12.0,
+    "trailing_stop_pct": 0.0,
+    "use_cloud_breakouts": true,
+    "use_price_cross": true,
+    "use_tk_cross": true
+}
