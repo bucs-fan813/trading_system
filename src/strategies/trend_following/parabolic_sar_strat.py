@@ -255,7 +255,7 @@ class ParabolicSAR(BaseStrategy):
             result.loc[sell_condition, 'signal'] = -1
         
         # Ensure initial signal is 0 if trend_change is NaN
-        result['signal'].fillna(0, inplace=True)
+        result['signal'] = result['signal'].fillna(0)
 
 
         # 5. Compute Signal Strength
@@ -263,7 +263,7 @@ class ParabolicSAR(BaseStrategy):
         # signal_strength can be NaN if ATR is NaN for initial periods.
         signal_strength_val = np.abs(result['close'] - result['sar']) / (result['atr'] + 1e-9)
         result['signal_strength'] = result['signal'] * signal_strength_val
-        result['signal_strength'].fillna(0.0, inplace=True) # Fill NaN strength with 0
+        result['signal_strength'] = result['signal_strength'].fillna(0.0) # Fill NaN strength with 0
 
         # 6. Apply Risk Management
         # RiskManager expects 'signal', 'open', 'high', 'low', 'close'

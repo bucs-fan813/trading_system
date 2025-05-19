@@ -1,0 +1,12 @@
+{
+    "af_step": 0.04939908836412562,
+    "atr_period": 20.0,
+    "atr_threshold": 1.2788207381211367,
+    "initial_af": 0.03626592284214587,
+    "long_only": false,
+    "max_af": 0.18343253763707473,
+    "stop_loss_pct": 0.045123075837054875,
+    "take_profit_pct": 0.13498549263898701,
+    "trailing_stop_pct": 0.0,
+    "use_atr_filter": false
+}
