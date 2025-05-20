@@ -49,11 +49,8 @@ class VolumeBreakout(BaseStrategy):
       For short trades, these levels are inverted.
     
     Args:
-        tickers (str or List[str]): Stock ticker symbol or list of tickers.
-        start_date (str, optional): Start date for backtesting in 'YYYY-MM-DD' format.
-        end_date (str, optional): End date for backtesting in 'YYYY-MM-DD' format.
-        initial_position (int): Initial trading position (0 for none, 1 for long, -1 for short).
-        latest_only (bool): If True, returns only the latest signal row per ticker.
+        db_config (DatabaseConfig): Database configuration settings.
+        params (Optional[Dict]): Strategy parameters.
     
     Returns:
         pd.DataFrame: A DataFrame containing price data and breakout indicators along with:
@@ -100,12 +97,21 @@ class VolumeBreakout(BaseStrategy):
             'transaction_cost_pct': 0.001,
             'long_only': True
         }
+        # Ensure all default params are present if params is partially provided
+        current_params = default_params.copy()
         if params:
-            default_params.update(params)
-        super().__init__(db_config, default_params)
+            current_params.update(params)
+        
+        # Ensure numeric params that are used as integers are indeed integers
+        # Hyperopt's hp.quniform returns float, so cast is needed before use if strict int is required by pandas.
+        # However, most pandas functions handle float window sizes by flooring.
+        # Explicit casting in __init__ or where used is safer.
+        # For this strategy, casting is handled within generate_signals where parameters are used.
+        
+        super().__init__(db_config, current_params)
     
     def generate_signals(self,
-                         tickers: Union[str, List[str]],
+                         ticker: Union[str, List[str]],
                          start_date: Optional[str] = None,
                          end_date: Optional[str] = None,
                          initial_position: int = 0,
@@ -119,7 +125,7 @@ class VolumeBreakout(BaseStrategy):
         signal strength, and integrates risk management adjustments.
         
         Args:
-            tickers (str or List[str]): Stock ticker symbol or list of tickers.
+            ticker (str or List[str]): Stock ticker symbol or list of tickers.
             start_date (str, optional): Backtesting start date (YYYY-MM-DD).
             end_date (str, optional): Backtesting end date (YYYY-MM-DD).
             initial_position (int): Starting trading position (0, 1, or -1).
@@ -131,132 +137,178 @@ class VolumeBreakout(BaseStrategy):
         """
         
         # Determine extra lookback buffer for indicator calculation.
-        extra_buffer = 50
-        lookback_length = max(
-            self.params['lookback_period'], 
-            self.params['volume_avg_period'],
-            self.params['atr_period'] if self.params['use_atr_filter'] else 0
-        ) + extra_buffer
+        # Ensure params used for lookback are integers.
+        param_lookback_period = int(self.params['lookback_period'])
+        param_volume_avg_period = int(self.params['volume_avg_period'])
+        param_atr_period = int(self.params['atr_period']) if self.params['use_atr_filter'] else 0
+
+        extra_buffer = 50 # Increased buffer for safety with various lookbacks
+        lookback_length = int(max(
+            param_lookback_period, 
+            param_volume_avg_period,
+            param_atr_period
+        ) + extra_buffer)
         
-        # Retrieve historical price data; supports both single and multiple tickers.
-        price_data = self.get_historical_prices(tickers, lookback=lookback_length, from_date=start_date, to_date=end_date)
+        price_data = self.get_historical_prices(ticker, lookback=lookback_length, from_date=start_date, to_date=end_date)
         if price_data.empty:
-            self.logger.warning("Insufficient data to generate Volume Breakout signals.")
+            self.logger.warning(f"Insufficient data for ticker(s) {ticker} to generate Volume Breakout signals.")
             return pd.DataFrame()
         
-        # Process data differently for multi-ticker (MultiIndex) and single ticker (DatetimeIndex)
+        result = price_data.copy() # Start with a copy to add columns
+
         if isinstance(price_data.index, pd.MultiIndex):
-            price_data = price_data.sort_index()
-            # Compute rolling metrics using groupby transform.
-            resistance = price_data.groupby(level=0)['high'].transform(
-                lambda x: x.rolling(window=self.params['lookback_period']).max()
+            # Multi-ticker processing
+            price_data = price_data.sort_index() # Ensure sorted for groupby operations
+            result = result.sort_index()
+
+            result['resistance'] = price_data.groupby(level=0)['high'].transform(
+                lambda x: x.rolling(window=param_lookback_period).max()
             )
-            support = price_data.groupby(level=0)['low'].transform(
-                lambda x: x.rolling(window=self.params['lookback_period']).min()
+            result['support'] = price_data.groupby(level=0)['low'].transform(
+                lambda x: x.rolling(window=param_lookback_period).min()
             )
-            avg_volume = price_data.groupby(level=0)['volume'].transform(
-                lambda x: x.rolling(window=self.params['volume_avg_period']).mean()
+            result['avg_volume'] = price_data.groupby(level=0)['volume'].transform(
+                lambda x: x.rolling(window=param_volume_avg_period).mean()
             )
-            price_change = price_data.groupby(level=0)['close'].transform(lambda x: x.pct_change())
+            result['price_change'] = price_data.groupby(level=0)['close'].transform(
+                lambda x: x.pct_change(fill_method=None) # Explicit fill_method
+            )
+
             if self.params['use_atr_filter']:
-                atr = price_data.groupby(level=0).apply(
-                    lambda grp: self._calculate_atr(grp, period=self.params['atr_period'])
-                )
-                atr = atr.sort_index()
-                price_volatility = atr / price_data['close']
+                atr_parts = []
+                for _, group_df in price_data.groupby(level=0): # Iterate per ticker
+                    if not group_df.empty:
+                        atr_group = self._calculate_atr(group_df, period=param_atr_period)
+                        atr_parts.append(atr_group)
+                
+                if atr_parts:
+                    atr = pd.concat(atr_parts).sort_index()
+                     # Ensure index names match for robust alignment, though concat usually handles this well.
+                    if isinstance(atr.index, pd.MultiIndex) and atr.index.names != price_data.index.names:
+                        atr.index.names = price_data.index.names
+                else: # Fallback if no ATR could be calculated (e.g., all groups too short)
+                    atr = pd.Series(np.nan, index=price_data.index)
+                
+                result['atr'] = atr
+                # Ensure price_data['close'] is aligned with atr for division
+                # If atr has NaNs (e.g. from insufficient data for a ticker), price_volatility will also have NaNs
+                price_volatility = atr.div(price_data['close']) # Using .div for clarity on Series/Series op
             else:
-                atr = pd.Series(0, index=price_data.index)
-                price_volatility = pd.Series(0, index=price_data.index)
+                result['atr'] = pd.Series(0.0, index=price_data.index)
+                price_volatility = pd.Series(0.0, index=price_data.index)
             
-            result = price_data.copy()
-            result['resistance'] = resistance
-            result['support'] = support
-            result['avg_volume'] = avg_volume
-            result['price_change'] = price_change
-            result['atr'] = atr
             result['price_volatility'] = price_volatility
             
-            # Vectorized calculation of consecutive breakout counts per ticker.
             above_mask = result['close'] > result.groupby(level=0)['resistance'].shift(1)
             below_mask = result['close'] < result.groupby(level=0)['support'].shift(1)
-            def count_consecutive(b):
-                return b.groupby((~b).cumsum()).cumcount() + 1
-            result['above_resistance_count'] = above_mask.groupby(result.index.get_level_values(0)).transform(count_consecutive)
+            
+            def count_consecutive_true(series_bool: pd.Series) -> pd.Series:
+                """Counts consecutive True values in a boolean Series."""
+                return series_bool.groupby((~series_bool).cumsum()).cumcount() + 1
+            
+            # Apply count_consecutive per group using transform
+            result['above_resistance_count'] = above_mask.groupby(level=0).transform(count_consecutive_true)
             result['above_resistance_count'] = result['above_resistance_count'].where(above_mask, 0)
-            result['below_support_count'] = below_mask.groupby(result.index.get_level_values(0)).transform(count_consecutive)
+            
+            result['below_support_count'] = below_mask.groupby(level=0).transform(count_consecutive_true)
             result['below_support_count'] = result['below_support_count'].where(below_mask, 0)
+
         else:
+            # Single-ticker processing
             price_data = price_data.sort_index()
-            resistance = price_data['high'].rolling(window=self.params['lookback_period']).max()
-            support = price_data['low'].rolling(window=self.params['lookback_period']).min()
-            avg_volume = price_data['volume'].rolling(window=self.params['volume_avg_period']).mean()
-            price_change = price_data['close'].pct_change()
+            result = result.sort_index()
+
+            result['resistance'] = price_data['high'].rolling(window=param_lookback_period).max()
+            result['support'] = price_data['low'].rolling(window=param_lookback_period).min()
+            result['avg_volume'] = price_data['volume'].rolling(window=param_volume_avg_period).mean()
+            result['price_change'] = price_data['close'].pct_change(fill_method=None) # Explicit fill_method
+
             if self.params['use_atr_filter']:
-                atr = self._calculate_atr(price_data, period=self.params['atr_period'])
-                price_volatility = atr / price_data['close']
+                result['atr'] = self._calculate_atr(price_data, period=param_atr_period)
+                result['price_volatility'] = result['atr'] / result['close']
             else:
-                atr = pd.Series(0, index=price_data.index)
-                price_volatility = pd.Series(0, index=price_data.index)
+                result['atr'] = pd.Series(0.0, index=price_data.index)
+                result['price_volatility'] = pd.Series(0.0, index=price_data.index)
             
-            result = price_data.copy()
-            result['resistance'] = resistance
-            result['support'] = support
-            result['avg_volume'] = avg_volume
-            result['price_change'] = price_change
-            result['atr'] = atr
-            result['price_volatility'] = price_volatility
-            
-            # Vectorized calculation of consecutive breakout counts.
-            above_mask = result['close'] > resistance.shift(1)
-            below_mask = result['close'] < support.shift(1)
-            def count_consecutive(x):
-                return x.groupby((~x).cumsum()).cumcount() + 1
-            result['above_resistance_count'] = count_consecutive(above_mask)
+            above_mask = result['close'] > result['resistance'].shift(1)
+            below_mask = result['close'] < result['support'].shift(1)
+
+            def count_consecutive_true_single(series_bool: pd.Series) -> pd.Series:
+                """ Helper for single ticker consecutive counts. """
+                return series_bool.groupby((~series_bool).cumsum()).cumcount() + 1
+
+            result['above_resistance_count'] = count_consecutive_true_single(above_mask)
             result['above_resistance_count'] = result['above_resistance_count'].where(above_mask, 0)
-            result['below_support_count'] = count_consecutive(below_mask)
+            
+            result['below_support_count'] = count_consecutive_true_single(below_mask)
             result['below_support_count'] = result['below_support_count'].where(below_mask, 0)
-        
-        # Generate raw trading signals based on breakout criteria.
+
+        # Generate raw trading signals
         result['signal'] = 0
-        buy_signal = (
-            (result['above_resistance_count'] >= self.params['consecutive_bars']) &
+        param_consecutive_bars = int(self.params['consecutive_bars'])
+
+        buy_conditions = (
+            (result['above_resistance_count'] >= param_consecutive_bars) &
             (result['volume'] > result['avg_volume'] * self.params['volume_threshold']) &
             (result['price_change'].abs() > self.params['price_threshold'])
         )
         if self.params['use_atr_filter']:
-            buy_signal &= (result['price_change'].abs() > result['price_volatility'] * self.params['atr_threshold'])
+            buy_conditions &= (result['price_change'].abs() > result['price_volatility'] * self.params['atr_threshold'])
         
-        sell_signal = (
-            (result['below_support_count'] >= self.params['consecutive_bars']) &
+        sell_conditions = (
+            (result['below_support_count'] >= param_consecutive_bars) &
             (result['volume'] > result['avg_volume'] * self.params['volume_threshold']) &
             (result['price_change'].abs() > self.params['price_threshold'])
         )
         if self.params['use_atr_filter']:
-            sell_signal &= (result['price_change'].abs() > result['price_volatility'] * self.params['atr_threshold'])
+            sell_conditions &= (result['price_change'].abs() > result['price_volatility'] * self.params['atr_threshold'])
         
-        result.loc[buy_signal, 'signal'] = 1
-        if self.params['long_only']:
-            result.loc[sell_signal, 'signal'] = 0
-        else:
-            result.loc[sell_signal, 'signal'] = -1
-        
-        # Compute normalized signal strength.
+        result.loc[buy_conditions, 'signal'] = 1
+        if not self.params['long_only']: # Apply short sell signals only if not long_only
+            result.loc[sell_conditions, 'signal'] = -1
+        # If long_only is True, sell_conditions effectively become exit signals if RiskManager interprets signal 0 as exit.
+        # Or, they are ignored if RiskManager only acts on 1 and -1 explicitly.
+        # The current logic implies sell signals are simply not generated if long_only.
+        # If an explicit exit/flatten signal (0) is desired for long_only from sell_conditions,
+        # it would need `result.loc[sell_conditions, 'signal'] = 0` if a long position is active.
+        # However, standard practice is that RM handles exits. Raw signal 0 means "no new signal".
+
+        # Compute normalized signal strength
+        # Ensure price_volatility is not zero if use_atr_filter is true to avoid division by zero if price_change is non-zero
+        # The 1e-6 epsilon handles this.
         if self.params['use_atr_filter']:
-            result['signal_strength'] = result['price_change'].abs() / (result['price_volatility'] + 1e-6)
+            # price_volatility can be 0 if ATR is 0 or close is very large, or if use_atr_filter was false (then it's 0.0)
+            # The condition `if self.params['use_atr_filter']` ensures price_volatility is from ATR here.
+            # If ATR is genuinely zero (e.g. flat price for `atr_period`), then price_volatility is zero.
+            denominator = result['price_volatility'] + 1e-9 # Use a smaller epsilon
+            result['signal_strength'] = result['price_change'].abs().div(denominator)
         else:
             result['signal_strength'] = result['price_change'].abs()
         
-        # Drop rows with essential NaN values.
-        result.dropna(subset=['close', 'resistance', 'support', 'avg_volume'], inplace=True)
+        # Fill NaNs in signal_strength that might arise from division by zero or NaN inputs
+        result['signal_strength'].fillna(0.0, inplace=True)
+
+        # Drop rows with NaN values in essential calculation columns BEFORE RiskManager
+        # These NaNs typically occur at the beginning of the series due to rolling calculations.
+        essential_cols_for_signal_gen = ['resistance', 'support', 'avg_volume', 'price_change']
+        if self.params['use_atr_filter']:
+            essential_cols_for_signal_gen.extend(['atr', 'price_volatility'])
         
-        # If only the latest signal is desired, select the last row for each ticker.
+        # Add 'close' to ensure RiskManager receives valid close prices
+        essential_cols_for_signal_gen.append('close')
+        
+        result.dropna(subset=essential_cols_for_signal_gen, inplace=True)
+
+        if result.empty:
+            self.logger.warning(f"DataFrame became empty after dropping NaNs for ticker(s) {ticker}. No signals to process.")
+            return pd.DataFrame()
+
         if latest_only:
             if isinstance(result.index, pd.MultiIndex):
                 result = result.groupby(level=0).tail(1)
             else:
                 result = result.tail(1)
         
-        # Integrate risk management using the RiskManager class.
         risk_manager = RiskManager(
             stop_loss_pct=self.params['stop_loss_pct'],
             take_profit_pct=self.params['take_profit_pct'],
@@ -264,15 +316,50 @@ class VolumeBreakout(BaseStrategy):
             slippage_pct=self.params['slippage_pct'],
             transaction_cost_pct=self.params['transaction_cost_pct']
         )
-        result = risk_manager.apply(result, initial_position=initial_position)
-        # Rename risk management output columns to align with the Awesome Oscillator structure.
-        result = result.rename(columns={
+        
+        # RiskManager needs 'open', 'high', 'low', 'close', 'signal'.
+        # Ensure 'open' is present. If not in source, 'close' can be a proxy for RM entry calc.
+        # BaseStrategy.get_historical_prices provides 'open'.
+        rm_input_df = result[['open', 'high', 'low', 'close', 'signal']].copy()
+        # Add any other columns from 'result' that might be useful for RM or pass-through,
+        # like 'signal_strength', 'atr', etc.
+        # RiskManager currently only strictly needs OHLC and signal.
+        # For now, pass only required + 'signal_strength' and 'atr' as they are strategy outputs.
+        if 'signal_strength' in result.columns:
+             rm_input_df['signal_strength'] = result['signal_strength']
+        if 'atr' in result.columns: # Pass ATR for potential use or logging
+             rm_input_df['atr'] = result['atr']
+        
+        # Apply Risk Manager
+        processed_result = risk_manager.apply(rm_input_df, initial_position=initial_position)
+        
+        # Merge RM outputs back to the 'result' DataFrame if desired, or return 'processed_result'
+        # For consistency with AwesomeOscillator, we want to return a single DataFrame
+        # with all strategy indicators AND RM outputs.
+        
+        # Columns from processed_result: 'position', 'return', 'cumulative_return', 'exit_type', plus original input to RM
+        # Rename RM columns
+        processed_result = processed_result.rename(columns={
             'return': 'rm_strategy_return', 
             'cumulative_return': 'rm_cumulative_return', 
             'exit_type': 'rm_action'
         })
+
+        # Combine 'result' (which has strategy indicators) with 'processed_result' (RM outputs)
+        # Need to be careful about index alignment and dropped NaN rows.
+        # 'result' was already filtered by dropna. 'processed_result' index should match this.
+        final_df = result.copy() # Start with the strategy indicators dataframe
         
-        return result
+        # Add RM columns to final_df, ensuring alignment
+        cols_from_rm = ['position', 'rm_strategy_return', 'rm_cumulative_return', 'rm_action']
+        for col in cols_from_rm:
+            if col in processed_result.columns:
+                final_df[col] = processed_result[col]
+            else: # Should not happen if RM runs correctly
+                final_df[col] = np.nan 
+                self.logger.warning(f"Column {col} missing from RiskManager output.")
+
+        return final_df
     
     def _calculate_atr(self, price_data: pd.DataFrame, period: int = 14) -> pd.Series:
         """
@@ -283,18 +370,33 @@ class VolumeBreakout(BaseStrategy):
             ATRₜ = EMA(TR, alpha = 1/period)
         
         Args:
-            price_data (pd.DataFrame): DataFrame with 'high', 'low', and 'close' prices.
+            price_data (pd.DataFrame): DataFrame with 'high', 'low', and 'close' prices,
+                                       indexed by date for a single ticker.
             period (int): Lookback period for ATR calculation (default: 14).
         
         Returns:
-            pd.Series: Series of ATR values.
+            pd.Series: Series of ATR values, indexed like price_data.
         """
+        if price_data.empty or len(price_data) < period:
+            # Return a series of NaNs with the same index if data is insufficient
+            return pd.Series(np.nan, index=price_data.index)
+
         high = price_data['high']
         low = price_data['low']
-        prev_close = price_data['close'].shift(1)
+        # Ensure prev_close has same index as high, low for concat
+        prev_close = price_data['close'].shift(1).reindex_like(high) 
+
         tr1 = high - low
         tr2 = (high - prev_close).abs()
         tr3 = (low - prev_close).abs()
+        
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = true_range.ewm(alpha=1/period, min_periods=period).mean()
+        # Fill NaN in true_range that might occur if prev_close is NaN for the first row
+        # This first TR value would be `high - low` effectively if prev_close is NaN
+        # EWM handles initial NaNs correctly by starting calculation after min_periods.
+        
+        atr = true_range.ewm(alpha=1.0/period, min_periods=period, adjust=False).mean()
+        # Using adjust=False for Wilder's EMA, which is common for ATR.
+        # min_periods=period ensures ATR starts after 'period' TR values.
+        
         return atr

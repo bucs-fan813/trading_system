@@ -23,10 +23,12 @@ enhanced_market_pressure_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Whether to only take long positions
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.1),  # Stop loss percentage
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.03, 0.2),  # Take profit percentage
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.01, 0.08),  # Trailing stop percentage
-
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 garchx_strat_search_space = {
@@ -42,9 +44,12 @@ garchx_strat_search_space = {
     'capital': hp.choice('capital', [1.0]),  # Fixed for optimization purposes
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.10),
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.25),
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.01, 0.08),
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]),
     
     # Model parameters (for extended optimization)
     'pca_components': hp.quniform('pca_components', 3, 10, 1),
@@ -73,9 +78,12 @@ pairs_trading_strat_search_space = {
     'exit_threshold': hp.uniform('exit_threshold', 0.4, 1.2),  # Wider range for volatility
     
     # Risk management
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.2),  # 3%-20% (broader for small-cap swings)
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.3),  # 5%-30%
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.01, 0.08),  # 1%-8%
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.08, 0.08),  # 3%-20% (broader for small-cap swings)
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # 5%-30%
+        'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 
@@ -105,9 +113,12 @@ prophet_momentum_strat_search_space = {
     'rsi_period': hp.quniform('rsi_period', 7, 21, 1),
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),  # Indian markets can be more volatile
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Indian markets can be more volatile
     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0, 0.05)
+        'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 cup_and_handle_strat_search_space = {
@@ -130,9 +141,12 @@ cup_and_handle_strat_search_space = {
     'volume_confirm': hp.choice('volume_confirm', [True, False]), # Whether to require volume surge on breakout
     
     # Risk Management Parameters (from RiskManager)
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.15), # 3% to 15% stop loss
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.05, 0.30), # 5% to 30% take profit
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.02, 0.15) # 0% (disabled) 
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08), # 3% to 15% stop loss
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15), # 5% to 30% take profit
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 triangle_breakout_strat_search_space = {
@@ -148,9 +162,12 @@ triangle_breakout_strat_search_space = {
     'volume_confirm': hp.choice('volume_confirm', [True, False]),  # Whether to require volume confirmation
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.03, 0.08),  # Stop loss percentage
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.18),  # Take profit percentage
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0, 0.05)  # Trailing stop percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Take profit percentage
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 
@@ -172,9 +189,12 @@ volume_breakout_strat_search_space = {
     'atr_threshold': hp.uniform('atr_threshold', 0.5, 2.0),
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.02, 0.08),
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.04, 0.15),
-    'trailing_stop_pct': hp.uniform('trailing_stop_pct', 0.0, 0.06),
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),
+    'trailing_stop_pct': hp.choice('trailing_stop_pct', [
+        0.0, # Explicitly include 0 (disabled)
+        hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
+    ]) 
 }
 
 cci_oscillator_strat_search_space = {
@@ -187,8 +207,8 @@ cci_oscillator_strat_search_space = {
     'long_only': hp.choice('long_only', [True, False]),  # Whether to take short positions
     
     # Risk management parameters
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.01, 0.08),  # Stop loss percentage
-    'take_profit_pct': hp.uniform('take_profit_pct', 0.02, 0.15),  # Take profit percentage
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # Stop loss percentage
+    'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # Take profit percentage
     'trailing_stop_pct': hp.choice('trailing_stop_pct', [
         0.0, # Explicitly include 0 (disabled)
         hp.uniform('trailing_stop_pct_val', 0.04, 0.08) # Enable TSL within a range if chosen
