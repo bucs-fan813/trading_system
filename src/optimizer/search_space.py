@@ -78,7 +78,7 @@ pairs_trading_strat_search_space = {
     'exit_threshold': hp.uniform('exit_threshold', 0.4, 1.2),  # Wider range for volatility
     
     # Risk management
-    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.08, 0.08),  # 3%-20% (broader for small-cap swings)
+    'stop_loss_pct': hp.uniform('stop_loss_pct', 0.04, 0.08),  # 3%-20% (broader for small-cap swings)
     'take_profit_pct': hp.uniform('take_profit_pct', 0.06, 0.15),  # 5%-30%
         'trailing_stop_pct': hp.choice('trailing_stop_pct', [
         0.0, # Explicitly include 0 (disabled)

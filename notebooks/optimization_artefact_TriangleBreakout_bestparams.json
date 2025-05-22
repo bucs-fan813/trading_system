@@ -1,0 +1,10 @@
+{
+    "breakout_threshold": 0.006442752303623027,
+    "max_lookback": 30.0,
+    "min_pattern_size": 0.07853319719702596,
+    "min_points": 6.0,
+    "stop_loss_pct": 0.042809495764066015,
+    "take_profit_pct": 0.11063865283059603,
+    "trailing_stop_pct": 0.0,
+    "volume_confirm": true
+}
