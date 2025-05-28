@@ -1,0 +1,15 @@
+{
+    "breakout_threshold": 0.02245009433787281,
+    "cup_depth_threshold": 0.49173550899135554,
+    "extrema_order": 15.0,
+    "handle_depth_threshold": 0.2526248303036146,
+    "max_cup_duration": 65.0,
+    "max_handle_duration": 16.0,
+    "min_cup_duration": 22.0,
+    "min_handle_duration": 6.0,
+    "peak_similarity_threshold": 0.15462050307008274,
+    "stop_loss_pct": 0.048025470486709396,
+    "take_profit_pct": 0.1488860638327401,
+    "trailing_stop_pct": 0.05285321228068313,
+    "volume_confirm": false
+}
