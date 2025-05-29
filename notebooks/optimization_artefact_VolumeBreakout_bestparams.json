@@ -1,13 +1,13 @@
 {
-    "atr_period": 20.0,
-    "atr_threshold": 0.5390197906091738,
+    "atr_period": 19.0,
+    "atr_threshold": 0.8047036926340543,
     "consecutive_bars": 5.0,
-    "lookback_period": 50.0,
-    "price_threshold": 0.025855733388936018,
-    "stop_loss_pct": 0.07154116016649402,
-    "take_profit_pct": 0.0851355820702463,
-    "trailing_stop_pct": 0.029195266874747147,
+    "lookback_period": 35.0,
+    "price_threshold": 0.04951652709641788,
+    "stop_loss_pct": 0.050228961533081304,
+    "take_profit_pct": 0.08770241390090448,
+    "trailing_stop_pct": 0.0,
     "use_atr_filter": false,
-    "volume_avg_period": 19.0,
-    "volume_threshold": 2.993391077034267
+    "volume_avg_period": 28.0,
+    "volume_threshold": 2.6059581005950045
 }
