@@ -77,6 +77,7 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
             'bull_div_threshold': 0.01,
             'bear_div_threshold': 0.01,
         }
+
         params = params or default_params
         super().__init__(db_config, params)
         
@@ -99,7 +100,7 @@ class EnhancedMarketPressureStrategy(BaseStrategy):
         risk_params = {
             'stop_loss_pct': params.get('stop_loss_pct', 0.05),
             'take_profit_pct': params.get('take_profit_pct', 0.10),
-            'trail_stop_pct': params.get('trailing_stop_pct', 0),
+            'trailing_stop_pct': params.get('trailing_stop_pct', 0),
             'slippage_pct': params.get('slippage_pct', 0.001),
             'transaction_cost_pct': params.get('transaction_cost_pct', 0.001),
         }
