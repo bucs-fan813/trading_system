@@ -8,7 +8,7 @@ from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
 
-class ParabolicSAR(BaseStrategy):
+class ParabolicSARStrategy(BaseStrategy):
     """
     Parabolic SAR Strategy with Integrated Risk Management Component.
 

@@ -41,7 +41,7 @@ from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
 
-class DonchianChannel(BaseStrategy):
+class DonchianChannelStrategy(BaseStrategy):
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
         Initialize the Donchian Channel strategy with parameters for channel and risk management.

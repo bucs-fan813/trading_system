@@ -39,7 +39,7 @@ from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
-class GarchXStrategy(BaseStrategy):
+class GarchXStrategyStrategy(BaseStrategy):
     def __init__(self, db_config: DatabaseConfig, params: Optional[Dict] = None):
         """
         Initialize the GARCH‑X Strategy.

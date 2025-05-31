@@ -34,7 +34,7 @@ from src.strategies.base_strat import BaseStrategy
 from src.strategies.risk_management import RiskManager
 
 
-class PairsTrading(BaseStrategy):
+class PairsTradingStrategy(BaseStrategy):
     """
     A pairs trading strategy for identifying and trading cointegrated securities with integrated risk management.
 

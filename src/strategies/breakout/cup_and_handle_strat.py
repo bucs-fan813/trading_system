@@ -10,7 +10,7 @@ from src.strategies.base_strat import BaseStrategy, DataRetrievalError
 from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
-class CupAndHandle(BaseStrategy):
+class CupAndHandleStrategy(BaseStrategy):
     """
     Optimized Cup and Handle Breakout Strategy with Integrated Risk Management.
 

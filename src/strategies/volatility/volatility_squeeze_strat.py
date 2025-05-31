@@ -9,7 +9,7 @@ from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
 
-class VolatilitySqueeze(BaseStrategy):
+class VolatilitySqueezeStrategy(BaseStrategy):
     """
     Volatility Squeeze Strategy with Integrated Risk Management.
 

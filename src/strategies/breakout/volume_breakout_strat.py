@@ -8,7 +8,7 @@ from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
 
-class VolumeBreakout(BaseStrategy):
+class VolumeBreakoutStrategy(BaseStrategy):
     """
     Volume Breakout Strategy with Integrated Risk Management.
     

@@ -8,7 +8,7 @@ from src.database.config import DatabaseConfig
 from src.strategies.risk_management import RiskManager
 
 
-class IchimokuCloud(BaseStrategy):
+class IchimokuCloudStrategy(BaseStrategy):
     """
     Ichimoku Cloud Strategy with Integrated Risk Management Component.
 
