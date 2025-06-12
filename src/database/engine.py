@@ -1,47 +1,54 @@
 # trading_system/src/database/engine.py
 
-
-from sqlalchemy import create_engine, exc, event, text
 import logging
+from sqlalchemy import create_engine, exc, event, text
 from sqlalchemy.pool import NullPool
+from .config import DatabaseConfig
 
 logger = logging.getLogger(__name__)
 
-def create_db_engine(config):
+def create_db_engine(config: DatabaseConfig):
     """
-    Create a database engine with connection validation and SQLite PRAGMAs for concurrency.
-    
+    Creates a SQLAlchemy database engine with optimized settings for SQLite.
+
+    This function configures the engine with specific PRAGMA settings to
+    enhance concurrency and performance for SQLite, which is crucial for a
+    multi-threaded application. It also performs a simple health check to 
+    validate connections.
+
     Args:
-        config: An object with attributes:
-            - url (str): The database URL.
-            - pool_size (int): Number of connections in the pool.
-            - max_overflow (int): Extra connections allowed beyond the pool size.
+        config (DatabaseConfig): The database configuration object.
 
     Returns:
-        engine: A SQLAlchemy engine instance.
+        sqlalchemy.engine.Engine: A configured SQLAlchemy engine instance.
     """
     try:
         engine = create_engine(
             config.url,
-            # Disable connection pooling since SQLite isn’t designed for high concurrency.
+            # NullPool is used because SQLite's connection management is simple
+            # and we handle threading concerns with PRAGMAs.
             poolclass=NullPool,
-            # Allow multi-thread access; add a timeout so SQLite will wait before erroring.
+            # `check_same_thread` is disabled to allow access from multiple threads.
+            # The `timeout` tells SQLite to wait if the database is locked.
             connect_args={"check_same_thread": False, "timeout": 60},
         )
-        
-        # Set SQLite-specific PRAGMAs on each new connection.
+
+        # Attach an event listener to set SQLite PRAGMAs for each new connection.
         @event.listens_for(engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
+            """Sets performance and concurrency-related PRAGMAs for SQLite."""
             cursor = dbapi_connection.cursor()
-            # Enable WAL mode which improves concurrent read/write performance.
+            # WAL (Write-Ahead Logging) mode allows concurrent reads while writing.
             cursor.execute("PRAGMA journal_mode=WAL;")
-            # Increase busy timeout (in milliseconds). Adjust as needed.
-            cursor.execute("PRAGMA busy_timeout=60000;")
+            # The busy_timeout tells SQLite how long to wait (in milliseconds)
+            # if the database is locked by another process, before timing out.
+            cursor.execute("PRAGMA busy_timeout=60000;")  # 60 seconds
             cursor.close()
 
-        # Optional: Validate connection health.
+        # Health check: Validate each connection on creation.
         @event.listens_for(engine, "engine_connect")
         def ping_connection(connection, branch):
+            """Performs a health check by pinging the database."""
             if branch:  # Skip validation for sub-transactions.
                 return
             try:
@@ -54,9 +61,9 @@ def create_db_engine(config):
                     logger.error("Failed to validate database connection.")
                     raise
 
-        logger.info("Database connection established successfully")
+        logger.info("Database engine created and configured successfully.")
         return engine
 
     except exc.SQLAlchemyError as e:
-        logger.error(f"Failed to establish database connection: {e}")
+        logger.error(f"Failed to create database engine: {e}")
         raise
