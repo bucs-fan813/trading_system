@@ -1,7 +1,7 @@
 # trading_system/src/database/engine.py
 
-import logging
 import time
+import logging
 from sqlalchemy import create_engine, exc, event, text, Index
 from sqlalchemy.pool import StaticPool, QueuePool
 from sqlalchemy.orm import sessionmaker
@@ -29,13 +29,12 @@ def create_db_engine(config: DatabaseConfig):
     """
     is_sqlite = config.url.startswith("sqlite")
     
-    # Configure engine parameters based on database type
+    # Start with common, always-valid engine arguments
     engine_kwargs = {
         "echo": config.echo,
-        "pool_timeout": config.pool_timeout,
-        "pool_recycle": config.pool_recycle,
     }
     
+    # Configure engine parameters based on database type
     if is_sqlite:
         engine_kwargs.update({
             "poolclass": StaticPool,
@@ -45,11 +44,13 @@ def create_db_engine(config: DatabaseConfig):
                 "isolation_level": None  # Enable autocommit mode
             }
         })
-    else:
+    else: # This block is for PostgreSQL or other server-based DBs
         engine_kwargs.update({
             "poolclass": QueuePool,
             "pool_size": config.pool_size,
-            "max_overflow": config.max_overflow
+            "max_overflow": config.max_overflow,
+            "pool_timeout": config.pool_timeout, # MOVED arugment
+            "pool_recycle": config.pool_recycle, # MOVED arugment
         })
     
     try:

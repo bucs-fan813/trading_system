@@ -59,7 +59,13 @@ class StatementsCollector(BaseCollector):
                 return
 
             # Process the data
-            data = data.fillna(pd.NA).infer_objects(copy=False).T 
+            # 1. Transpose the DataFrame first
+            data = data.T
+            # 2. Apply a function to each column to convert it to numeric, coercing errors to pd.NA
+            data = data.apply(lambda x: pd.to_numeric(x, errors='coerce'))
+            # 3. Explicitly infer the best possible data types (e.g., integer, float)
+            data = data.infer_objects(copy=False)
+            
             data['ticker'] = ticker
             data = data.reset_index().rename(columns={'index': 'date'})
 
@@ -92,4 +98,12 @@ class StatementsCollector(BaseCollector):
 
     def refresh_data(self, ticker: str) -> None:
         """Intentionally left empty - statements don't need refreshing"""
+        pass
+
+    def fetch_and_save(self, ticker: str) -> None:
+        """
+        Abstract method implementation. The main logic is handled in 
+        DataCollectionOrchestrator to loop through statement types.
+        """
+        # This method is not used by the orchestrator, but must exist to satisfy the abstract base class.
         pass

@@ -128,3 +128,13 @@ class InfoCollector(BaseCollector):
         except Exception as e:
             logger.error(f"Error refreshing data for {ticker} in {table_name}: {e}")
             raise
+
+    def fetch_and_save(self, ticker: str) -> None:
+        """
+        Fetches and saves company info. For this collector, it is the same as a full refresh.
+        
+        Args:
+            ticker: Ticker symbol.
+        """
+        # For company info, incremental fetch is the same as a refresh.
+        self.refresh_data(ticker)

@@ -282,18 +282,18 @@ class DataCollectionOrchestrator:
         
         logger.info("="*80)
 
-# def main(all_tickers: List[str]):
-#     """
-#     Main entry point for data collection.
+def main(all_tickers: List[str]):
+    """
+    Main entry point for data collection.
     
-#     Args:
-#         all_tickers: List of all ticker symbols to process
-#     """
-#     orchestrator = DataCollectionOrchestrator()
-#     results = orchestrator.run_collection_cycle(all_tickers)
+    Args:
+        all_tickers: List of all ticker symbols to process
+    """
+    orchestrator = DataCollectionOrchestrator()
+    results = orchestrator.run_collection_cycle(all_tickers)
     
-#     # Return results for monitoring/alerting systems
-#     return results
+    # Return results for monitoring/alerting systems
+    return results
 
 # if __name__ == "__main__":
 #     # Example usage

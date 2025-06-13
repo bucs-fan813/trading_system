@@ -48,7 +48,7 @@ class PriceCollector(BaseCollector):
                 
                 # Remove any overlap to prevent duplicates
                 if not data.empty and latest_date:
-                    data = data[data.index > latest_date]
+                    data = data[data.index.tz_localize(None) > latest_date]
             else:
                 logger.info(f"No existing data for {ticker}, fetching full history")
                 data = stock.history(period="max")
