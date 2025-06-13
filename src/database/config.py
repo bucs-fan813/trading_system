@@ -2,39 +2,59 @@
 
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Optional
 
 @dataclass
 class DatabaseConfig:
     """
-    Encapsulates database configuration settings.
-
-    This dataclass holds all necessary parameters for establishing a database
-    connection, including the URL and connection pool settings.
-
-    Attributes:
-        url (str): The database connection URL (e.g., 'sqlite:///path/to/db.sqlite').
-        max_retries (int): The maximum number of retries for database operations.
-        pool_size (int): The number of connections to keep open in the connection pool.
-        max_overflow (int): The number of connections that can be opened beyond the pool_size.
+    Database configuration with enhanced settings for trading system.
+    
+    Supports both SQLite and PostgreSQL with optimized connection parameters
+    for high-frequency data operations and concurrent access patterns.
     """
     url: str
-    max_retries: int = field(default=3, metadata={"validate": lambda x: x > 0})
-    pool_size: int = field(default=5, metadata={"validate": lambda x: x >= 1})
-    max_overflow: int = field(default=10, metadata={"validate": lambda x: x >= 0})
-
+    max_retries: int = field(default=3)
+    pool_size: int = field(default=10)
+    max_overflow: int = field(default=20)
+    pool_timeout: int = field(default=30)
+    pool_recycle: int = field(default=3600)
+    echo: bool = field(default=False)
+    
     @staticmethod
-    def default():
+    def default(db_type: str = "sqlite") -> "DatabaseConfig":
         """
-        Creates a default DatabaseConfig for a SQLite database.
+        Create an optimized instance of DatabaseConfig based on the specified database type.
 
-        The database file is stored in a 'data' directory at the project root.
-        This method ensures the 'data' directory exists.
-
+        This method configures a DatabaseConfig instance for either SQLite or PostgreSQL.
+        For "sqlite", it constructs a path to the database file within the "data" directory (creating
+        the directory if it does not exist) and sets connection pooling parameters optimized for SQLite.
+        For "postgresql", it returns a configuration with standard connection pooling parameters.
+        
+        Args:
+            db_type (str): The type of database to configure. Accepted values are "sqlite" or "postgresql".
+        
         Returns:
-            DatabaseConfig: A default configuration instance for SQLite.
+            DatabaseConfig: A configured instance of DatabaseConfig tailored for the chosen database type.
+        
+        Raises:
+            ValueError: If an unsupported database type is specified.
         """
-        # Assumes the project root is two levels up from this file's directory
         base_path = Path(__file__).resolve().parent.parent.parent / "data"
         base_path.mkdir(exist_ok=True)
-        database_path = base_path / "trading_system.db"
-        return DatabaseConfig(url=f"sqlite:///{database_path}")
+        
+        if db_type.lower() == "sqlite":
+            database_path = base_path / "trading_system.db"
+            return DatabaseConfig(
+                url=f"sqlite:///{database_path}",
+                pool_size=1,  # SQLite doesn't benefit from connection pooling
+                max_overflow=0
+            )
+        elif db_type.lower() == "postgresql":
+            # Example PostgreSQL configuration - adjust as needed
+            return DatabaseConfig(
+                url="postgresql://user:password@localhost:5432/trading_system",
+                pool_size=10,
+                max_overflow=20
+            )
+        else:
+            raise ValueError(f"Unsupported database type: {db_type}")
