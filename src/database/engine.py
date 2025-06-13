@@ -150,7 +150,7 @@ def _create_indexes(engine):
         
         # Refresh state indexes
         "CREATE INDEX IF NOT EXISTS idx_refresh_state_ticker ON refresh_state(ticker)",
-        "CREATE INDEX IF NOT EXISTS idx_refresh_state_refresh_date ON refresh_state(refresh_date)",
+        "CREATE INDEX IF NOT EXISTS idx_refresh_state_last_full_refresh ON refresh_state(last_full_refresh)",
         
         # Signal storage indexes
         "CREATE INDEX IF NOT EXISTS idx_signals_ticker_date ON signals(ticker, date)",
@@ -158,11 +158,16 @@ def _create_indexes(engine):
     ]
     
     with engine.connect() as conn:
-        for index_sql in indexes:
-            try:
-                conn.execute(text(index_sql))
-            except exc.OperationalError as e:
-                if "already exists" not in str(e):
-                    logger.warning(f"Failed to create index: {e}")
-        conn.commit()
+        transaction = conn.begin() # Start a transaction
+        try:
+            for index_sql in indexes:
+                try:
+                    conn.execute(text(index_sql))
+                except exc.OperationalError as e:
+                    if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower():
+                        logger.warning(f"Failed to create index: {e}")
+            transaction.commit() # Commit all changes
+        except Exception:
+            transaction.rollback() # Rollback on any error
+            raise
 
