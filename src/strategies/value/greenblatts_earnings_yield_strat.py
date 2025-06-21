@@ -1,4 +1,4 @@
-# trading_system/src/strategy/value/greenblatts_earnings_yeild_strat.py
+# trading_system/src/strategy/value/greenblatts_earnings_yield_strat.py
 
 # TODO: Verify
 

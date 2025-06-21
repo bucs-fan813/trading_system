@@ -109,10 +109,10 @@ This project implements a comprehensive trading system with modular components f
 │   │   │   ├── `acquirer_multiple.py` – Acquirer’s Multiple value strategy.  
 │   │   │   ├── `buffets_qarp_strat.py` – Buffett’s QARP value strategy.  
 │   │   │   ├── `deep_value_strat.py` – Deep value investing strategy.  
-│   │   │   ├── `dividend_yeild_start.py` – Dividend yield value strategy.  
+│   │   │   ├── `dividend_yield_strat.py` – Dividend yield value strategy.
 │   │   │   ├── `ev_ebidta_private_equity_strat.py` – EV/EBITDA private equity screener.  
 │   │   │   ├── `grahams_defensive_strat.py` – Graham’s defensive value strategy.  
-│   │   │   ├── `greenblatts_earnings_yeild_strat.py` – Greenblatt’s earnings yield strategy.  
+│   │   │   ├── `greenblatts_earnings_yield_strat.py` – Greenblatt’s earnings yield strategy.
 │   │   │   ├── `insider_activist_strat.py` – Insider/activist investor screener.  
 │   │   │   ├── `low_price_sales_start.py` – Low price-to-sales value strategy.  
 │   │   │   ├── `magic_formula_start.py` – Magic Formula value strategy.  
