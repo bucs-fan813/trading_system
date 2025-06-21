@@ -315,14 +315,16 @@ class BaseCollector(ABC):
         Returns:
             str: The corresponding SQL column type.
         """
-        if pd.api.types.is_integer_dtype(series):
+        # Check boolean dtype before integer to avoid bools being treated as
+        # integers by pandas type checks.
+        if pd.api.types.is_bool_dtype(series):
+            return "BOOLEAN"
+        elif pd.api.types.is_integer_dtype(series):
             return "INTEGER"
         elif pd.api.types.is_float_dtype(series):
             return "FLOAT"
         elif pd.api.types.is_datetime64_any_dtype(series):
             return "DATETIME"
-        elif pd.api.types.is_bool_dtype(series):
-            return "BOOLEAN"
         else:
             # For strings, try to estimate appropriate VARCHAR length
             if series.dtype == 'object':
