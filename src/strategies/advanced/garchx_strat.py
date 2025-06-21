@@ -297,8 +297,8 @@ class GarchXStrategyStrategy(BaseStrategy):
                 df = df.reset_index(level=0, drop=True)
             df.sort_index(inplace=True)
 
-            # Core feature engineering
-            df["log_return"] = np.log(df["close"] / df["close"].shift(1))
+            # Core feature engineering - scale returns to percentages
+            df["log_return"] = 100 * np.log(df["close"] / df["close"].shift(1))
             
             # Enhanced volume features (scale-invariant)
             df["vol_log"] = np.log(df["volume"] + 1)  # Add 1 to handle zero volumes
@@ -335,8 +335,8 @@ class GarchXStrategyStrategy(BaseStrategy):
             )
             
             # Overnight and intraday returns
-            df["overnight_ret"] = np.log((df["open"] + 1e-8) / (df["close"].shift(1) + 1e-8))
-            df["oc_ret"] = np.log((df["close"] + 1e-8) / (df["open"] + 1e-8))
+            df["overnight_ret"] = 100 * np.log((df["open"] + 1e-8) / (df["close"].shift(1) + 1e-8))
+            df["oc_ret"] = 100 * np.log((df["close"] + 1e-8) / (df["open"] + 1e-8))
             
             # Yang-Zhang volatility estimator
             df["yz_vol"] = np.sqrt(
@@ -550,7 +550,13 @@ class GarchXStrategyStrategy(BaseStrategy):
             
             # Calculate enhanced out-of-sample performance
             try:
-                forecast = best_model.forecast(horizon=len(test_data), x=X_test_pca, reindex=False)
+                forecast = best_model.forecast(
+                    horizon=len(test_data), 
+                    x=X_test_pca, 
+                    method='simulation',
+                    simulations=1000,
+                    reindex=False
+                )
                 forecast_returns = forecast.mean.iloc[-1].values
                 actual_returns = y_test.values
                 
@@ -1048,19 +1054,23 @@ class GarchXStrategyStrategy(BaseStrategy):
                 columns=[f'pca_{i}' for i in range(n_components)]
             )
             
-            # Replicate for forecast horizon
-            X_forecast_pca = pd.DataFrame(
-                np.tile(X_recent_pca.values, (horizon, 1)),
-                columns=X_recent_pca.columns
-            )
+            # Create 3D array for multiple exogenous variables in forecast
+            # Shape: (horizon, 1, n_components) - ARCH expects this format
+            X_forecast_array = np.repeat(X_recent_pca.values[np.newaxis, :, :], horizon, axis=0)
             
             # Generate forecast with enhanced error handling
-            forecast = model.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
+            forecast = model.forecast(
+                horizon=horizon, 
+                x=X_forecast_array, 
+                method='simulation',
+                simulations=1000,
+                reindex=False
+            )
             fc_means = forecast.mean.iloc[-1].values
             fc_variances = forecast.variance.iloc[-1].values
             
-            # Calculate enhanced forecast metrics
-            cumulative_ret = np.exp(np.sum(fc_means)) - 1
+            # Calculate enhanced forecast metrics - convert back from percentage
+            cumulative_ret = (np.exp(np.sum(fc_means / 100)) - 1) * 100  
             forecast_vol = np.sqrt(np.mean(fc_variances))
             
             # Calculate confidence bounds
@@ -1162,16 +1172,22 @@ class GarchXStrategyStrategy(BaseStrategy):
             # Generate enhanced forecast
             last_exog = X_train.iloc[-1].values.reshape(1, -1)
             last_exog_pca = pca.transform(last_exog)
-            X_forecast_pca = pd.DataFrame(
-                np.tile(last_exog_pca, (horizon, 1)),
-                columns=[f'pca_{i}' for i in range(n_components)]
-            )
             
-            forecast = best_result.forecast(horizon=horizon, x=X_forecast_pca, reindex=False)
+            # Create 3D array for multiple exogenous variables
+            # Shape: (horizon, 1, n_components)
+            X_forecast_array = np.repeat(last_exog_pca[np.newaxis, :, :], horizon, axis=0)
+            
+            forecast = best_result.forecast(
+                horizon=horizon, 
+                x=X_forecast_array, 
+                method='simulation',
+                simulations=1000,
+                reindex=False
+            )
             fc_means = forecast.mean.iloc[-1].values
             fc_variances = forecast.variance.iloc[-1].values
             
-            cumulative_ret = np.exp(np.sum(fc_means)) - 1
+            cumulative_ret = (np.exp(np.sum(fc_means / 100)) - 1) * 100
             forecast_vol = np.sqrt(np.mean(fc_variances))
             confidence_bound = 1.96 * forecast_vol
 
