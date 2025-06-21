@@ -1054,9 +1054,9 @@ class GarchXStrategyStrategy(BaseStrategy):
                 columns=[f'pca_{i}' for i in range(n_components)]
             )
             
-            # Create 3D array for multiple exogenous variables in forecast
-            # Shape: (horizon, 1, n_components) - ARCH expects this format
-            X_forecast_array = np.repeat(X_recent_pca.values[np.newaxis, :, :], horizon, axis=0)
+            # Create exogenous input for the forecast
+            # Use 2D array with shape (horizon, n_components)
+            X_forecast_array = np.repeat(X_recent_pca.values, horizon, axis=0)
             
             # Generate forecast with enhanced error handling
             forecast = model.forecast(
@@ -1170,12 +1170,12 @@ class GarchXStrategyStrategy(BaseStrategy):
                 return None, 0, 0.0, 0.0
 
             # Generate enhanced forecast
-            last_exog = X_train.iloc[-1].values.reshape(1, -1)
+            last_exog = X_train.iloc[-1:]
             last_exog_pca = pca.transform(last_exog)
-            
-            # Create 3D array for multiple exogenous variables
-            # Shape: (horizon, 1, n_components)
-            X_forecast_array = np.repeat(last_exog_pca[np.newaxis, :, :], horizon, axis=0)
+
+            # Create exogenous input for the forecast
+            # Use 2D array with shape (horizon, n_components)
+            X_forecast_array = np.repeat(last_exog_pca, horizon, axis=0)
             
             forecast = best_result.forecast(
                 horizon=horizon, 
