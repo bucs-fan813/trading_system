@@ -550,9 +550,14 @@ class GarchXStrategyStrategy(BaseStrategy):
             
             # Calculate enhanced out-of-sample performance
             try:
+                # The arch package requires 3-D arrays when forecasting with
+                # multiple exogenous regressors.  Convert the 2-D DataFrame of
+                # PCA components into a 3-D array with a single simulation
+                # dimension.
+                x_fc = X_test_pca.values[:, :, np.newaxis]
                 forecast = best_model.forecast(
-                    horizon=len(test_data), 
-                    x=X_test_pca, 
+                    horizon=len(test_data),
+                    x=x_fc,
                     method='simulation',
                     simulations=1000,
                     reindex=False
@@ -1054,14 +1059,16 @@ class GarchXStrategyStrategy(BaseStrategy):
                 columns=[f'pca_{i}' for i in range(n_components)]
             )
             
-            # Create exogenous input for the forecast
-            # Use 2D array with shape (horizon, n_components)
+            # Create exogenous input for the forecast.  When using more than one
+            # exogenous regressor, the arch package expects a 3-D array where the
+            # final dimension represents simulation paths.  Use a single path.
             X_forecast_array = np.repeat(X_recent_pca.values, horizon, axis=0)
-            
+            x_fc = X_forecast_array[:, :, np.newaxis]
+
             # Generate forecast with enhanced error handling
             forecast = model.forecast(
-                horizon=horizon, 
-                x=X_forecast_array, 
+                horizon=horizon,
+                x=x_fc,
                 method='simulation',
                 simulations=1000,
                 reindex=False
@@ -1173,13 +1180,16 @@ class GarchXStrategyStrategy(BaseStrategy):
             last_exog = X_train.iloc[-1:]
             last_exog_pca = pca.transform(last_exog)
 
-            # Create exogenous input for the forecast
-            # Use 2D array with shape (horizon, n_components)
+            # Create exogenous input for the forecast.  When using multiple
+            # regressors the arch package expects a 3-D array.  Repeat the last
+            # observation across the forecast horizon and add a singleton
+            # simulation dimension.
             X_forecast_array = np.repeat(last_exog_pca, horizon, axis=0)
-            
+            x_fc = X_forecast_array[:, :, np.newaxis]
+
             forecast = best_result.forecast(
-                horizon=horizon, 
-                x=X_forecast_array, 
+                horizon=horizon,
+                x=x_fc,
                 method='simulation',
                 simulations=1000,
                 reindex=False
