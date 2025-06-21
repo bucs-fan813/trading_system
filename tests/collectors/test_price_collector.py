@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 from src.collectors.price_collector import PriceCollector
 
 @patch('yfinance.Ticker')
-def test_fetch_price_data(mock_yfinance):
-    """Test price data collection logic."""
+def test_fetch_and_save(mock_yfinance):
+    """Test incremental price data collection logic."""
     mock_stock = MagicMock()
     mock_stock.history.return_value = MagicMock()
     mock_yfinance.return_value = mock_stock
@@ -15,7 +15,7 @@ def test_fetch_price_data(mock_yfinance):
     collector._get_latest_date = lambda *args: None
     collector._save_to_database = MagicMock()
     
-    collector.fetch_price_data("TEST")
+    collector.fetch_and_save("TEST")
     assert collector._save_to_database.called
 
 def test_refresh_data():

@@ -60,11 +60,11 @@ def test_end_to_end_flow(test_engine):
     price_collector = PriceCollector(test_engine)
     
     # First run - initial data
-    price_collector.fetch_price_data(TEST_TICKER)
+    price_collector.fetch_and_save(TEST_TICKER)
     
     # Second run - incremental update
     time.sleep(2)  # Ensure timestamp changes
-    price_collector.fetch_price_data(TEST_TICKER)
+    price_collector.fetch_and_save(TEST_TICKER)
     
     # Verify price data
     with test_engine.connect() as conn:
