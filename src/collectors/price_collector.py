@@ -39,7 +39,8 @@ class PriceCollector(BaseCollector):
                 start_date = latest_date + timedelta(days=1)
                 
                 # Only fetch if we need recent data
-                if start_date.date() >= datetime.now().date():
+                # Use > so today's data is included
+                if start_date.date() > datetime.now().date():
                     logger.debug(f"No new data needed for {ticker}")
                     return
                 
