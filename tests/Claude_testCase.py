@@ -243,8 +243,8 @@ def collector(mock_engine):
     return PriceCollector(mock_engine)
 
 @patch('yfinance.Ticker')
-def test_fetch_price_data(mock_ticker, collector):
-    """Test fetching price data."""
+def test_fetch_and_save(mock_ticker, collector):
+    """Test fetching and saving price data."""
     # Setup mock data
     mock_stock = Mock()
     mock_ticker.return_value = mock_stock
@@ -260,7 +260,7 @@ def test_fetch_price_data(mock_ticker, collector):
     mock_stock.history.return_value = mock_data
     
     # Test the fetch
-    collector.fetch_price_data('AAPL')
+    collector.fetch_and_save('AAPL')
     
     # Verify the data was processed
     mock_ticker.assert_called_once_with('AAPL')
