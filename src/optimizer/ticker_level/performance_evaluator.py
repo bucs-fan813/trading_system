@@ -1,4 +1,4 @@
-# trading_system/src/optimizer/performance_evaluator.py
+# trading_system/src/optimizer/ticker_level/performance_evaluator.py
 
 """
 Performance metrics calculation module for trading strategy evaluation.
