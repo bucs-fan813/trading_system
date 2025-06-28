@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 print(os.getcwd())
 
-#sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '..')))
+sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 try:
     from src.strategies.advanced.garchx_strat import GarchXStrategyStrategy
@@ -31,8 +31,8 @@ except ImportError as e:
 
 
 # Data Configuration
-TICKER_FILE_PATH = "../data/ticker.xlsx" # Path relative to project root
-MAX_TICKERS = 10 # Limit tickers for faster testing, set to None to use all
+TICKER_FILE_PATH = "data/ticker.xlsx" # Path relative to project root
+MAX_TICKERS = 1 # Limit tickers for faster testing, set to None to use all
 
 # --- Helper Functions ---
 

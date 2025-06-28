@@ -1,0 +1,16 @@
+{
+  "ticker": "HCLTECH.BO",
+  "order": [
+    1,
+    2
+  ],
+  "aic": 691.1529245536057,
+  "mse": 0.0,
+  "mae": 0.0,
+  "directional_accuracy": 0.0,
+  "vol_ratio": 1.0,
+  "n_components": 5,
+  "explained_variance_ratio": 0.0,
+  "trained_at": "2025-06-22T19:13:34.620119",
+  "params_hash": "92df2e96674a440a0bf0156578e5a4a9"
+}

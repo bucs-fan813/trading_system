@@ -1,0 +1,16 @@
+{
+  "ticker": "ICICIBANK.BO",
+  "order": [
+    1,
+    1
+  ],
+  "aic": 812.8542279307218,
+  "mse": 0.0,
+  "mae": 0.0,
+  "directional_accuracy": 0.0,
+  "vol_ratio": 1.0,
+  "n_components": 5,
+  "explained_variance_ratio": 0.0,
+  "trained_at": "2025-06-22T19:37:37.799969",
+  "params_hash": "92df2e96674a440a0bf0156578e5a4a9"
+}
