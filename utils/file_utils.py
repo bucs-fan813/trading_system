@@ -1,5 +1,5 @@
 """
-Utility functions for file operations.
+Utility functions for file operations, including recursive file listing and loading tickers from YAML files.
 """
 
 import os

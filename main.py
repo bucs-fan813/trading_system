@@ -1,6 +1,6 @@
 # trading_system/main.py
-"""Main entry point for the trading system.
-
+"""
+Main entry point for the trading system.
 This module configures logging, loads tickers, and starts the data collector.
 """
 
@@ -20,8 +20,8 @@ try:
     from utils.file_utils import load_tickers_from_yaml
 
     tickers = load_tickers_from_yaml("data/tickers.yml")
-    data_collector.main(tickers)
     print(tickers)
+    data_collector.main(tickers)
 except FileNotFoundError as e:
     sys.exit(f"File not found: {e}")
 except ImportError as e:
